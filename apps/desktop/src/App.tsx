@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, memo, useEffect, useMemo, useState } from "react";
 import {
   CreateTicketInput,
   TeaActorRef,
@@ -3560,7 +3560,7 @@ function AnalysisPlanChipList({ items }: { items: string[] }) {
   );
 }
 
-function AnalysisPlanView({
+const AnalysisPlanView = memo(function AnalysisPlanView({
   analysis,
   plan,
 }: {
@@ -3687,7 +3687,7 @@ function AnalysisPlanView({
       ) : null}
     </div>
   );
-}
+});
 
 function FocusedIssueSection({
   activeSection,
@@ -3942,7 +3942,7 @@ function FocusedIssueSection({
   );
 }
 
-function ExportPreview({ exportPreview }: { exportPreview: string }) {
+const ExportPreview = memo(function ExportPreview({ exportPreview }: { exportPreview: string }) {
   if (!exportPreview) return null;
 
   return (
@@ -3954,28 +3954,38 @@ function ExportPreview({ exportPreview }: { exportPreview: string }) {
       <pre className="export-preview">{exportPreview}</pre>
     </section>
   );
-}
+});
 
-function ConversationStream({
+const ConversationStream = memo(function ConversationStream({
   comments,
   events,
 }: {
   comments: TeaComment[];
   events: TeaEvent[];
 }) {
-  const entries = buildConversationEntries(comments, events);
   const [copiedEntryId, setCopiedEntryId] = useState<string | null>(null);
   const [conversationFilter, setConversationFilter] = useState<ConversationFilter>("all");
   const [activeEntryHash, setActiveEntryHash] = useState(() => {
     if (typeof window === "undefined") return "";
     return decodeURIComponent(window.location.hash.replace(/^#/, ""));
   });
-  const filteredConversationEntries = entries.filter((entry) => {
-    if (conversationFilter === "comments") return entry.kind === "comment";
-    if (conversationFilter === "events") return entry.kind === "event";
-    return true;
-  });
-  const filteredConversationTimelineItems = buildConversationTimelineItems(filteredConversationEntries);
+  // Derive the timeline via useMemo so the map/sort/group work only re-runs when the
+  // underlying comments/events (or the active filter) change — not on every parent
+  // poll, copy-button click, or hashchange re-render.
+  const entries = useMemo(() => buildConversationEntries(comments, events), [comments, events]);
+  const filteredConversationEntries = useMemo(
+    () =>
+      entries.filter((entry) => {
+        if (conversationFilter === "comments") return entry.kind === "comment";
+        if (conversationFilter === "events") return entry.kind === "event";
+        return true;
+      }),
+    [entries, conversationFilter],
+  );
+  const filteredConversationTimelineItems = useMemo(
+    () => buildConversationTimelineItems(filteredConversationEntries),
+    [filteredConversationEntries],
+  );
 
   useEffect(() => {
     if (!copiedEntryId) return undefined;
@@ -4190,7 +4200,7 @@ function ConversationStream({
       </div>
     </section>
   );
-}
+});
 
 function CommentEditor({
   busy,
