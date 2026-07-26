@@ -1073,92 +1073,130 @@ export default function App() {
     : null;
   const activeTicket = selectedTicket ?? selectedTicketFromList;
 
-  const ticketMatchesStateFilter = (ticket: TeaTicket) => {
-    const matchesState =
+  // The filter predicates are stabilized with useCallback so the derived memos
+  // below (filteredTickets, issueSignalCounts, issueTriageFilterCounts) can depend
+  // on them and have their dependency arrays verified by eslint react-hooks.
+  const ticketMatchesStateFilter = useCallback(
+    (ticket: TeaTicket) =>
       issueFilter === "all" ||
       (issueFilter === "open" && !isClosedTicket(ticket)) ||
-      (issueFilter === "closed" && isClosedTicket(ticket));
-    return matchesState;
-  };
+      (issueFilter === "closed" && isClosedTicket(ticket)),
+    [issueFilter],
+  );
 
-  const ticketMatchesAuthorFilter = (ticket: TeaTicket) => {
-    if (authorFilter) {
-      const author = ticket.owner_human_id?.trim() || "Tea local operator";
-      if (author !== authorFilter) return false;
-    }
-    return true;
-  };
+  const ticketMatchesAuthorFilter = useCallback(
+    (ticket: TeaTicket) => {
+      if (authorFilter) {
+        const author = ticket.owner_human_id?.trim() || "Tea local operator";
+        if (author !== authorFilter) return false;
+      }
+      return true;
+    },
+    [authorFilter],
+  );
 
-  const ticketMatchesLabelFilter = (ticket: TeaTicket) => {
-    if (selectedLabelFilter) {
-      const labels = filterableLabelsForTicket(ticket, localNotes).map(normalizeFilterLabel);
-      if (!labels.includes(selectedLabelFilter)) return false;
-    }
-    return true;
-  };
+  const ticketMatchesLabelFilter = useCallback(
+    (ticket: TeaTicket) => {
+      if (selectedLabelFilter) {
+        const labels = filterableLabelsForTicket(ticket, localNotes).map(normalizeFilterLabel);
+        if (!labels.includes(selectedLabelFilter)) return false;
+      }
+      return true;
+    },
+    [selectedLabelFilter, localNotes],
+  );
 
-  const ticketMatchesSearchQuery = (ticket: TeaTicket) => {
-    const query = searchQuery.trim().toLowerCase();
-    if (!query) return true;
+  const ticketMatchesSearchQuery = useCallback(
+    (ticket: TeaTicket) => {
+      const query = searchQuery.trim().toLowerCase();
+      if (!query) return true;
 
-    return [
-      ticket.id,
-      ticket.title,
-      ticket.description ?? "",
-      ticket.status,
-      ticket.source ?? "",
-      ticket.priority ?? "",
-      ticket.risk_level ?? "",
-      ticket.owner_human_id ?? "",
-      ticket.delegated_agent_id ?? "",
-      ...(filterableLabelsForTicket(ticket, localNotes) ?? []),
-    ]
-      .join(" ")
-      .toLowerCase()
-      .includes(query);
-  };
+      return [
+        ticket.id,
+        ticket.title,
+        ticket.description ?? "",
+        ticket.status,
+        ticket.source ?? "",
+        ticket.priority ?? "",
+        ticket.risk_level ?? "",
+        ticket.owner_human_id ?? "",
+        ticket.delegated_agent_id ?? "",
+        ...(filterableLabelsForTicket(ticket, localNotes) ?? []),
+      ]
+        .join(" ")
+        .toLowerCase()
+        .includes(query);
+    },
+    [searchQuery, localNotes],
+  );
 
-  const ticketMatchesBaseIssueFilters = (ticket: TeaTicket) =>
-    ticketMatchesStateFilter(ticket) &&
-    ticketMatchesAuthorFilter(ticket) &&
-    ticketMatchesLabelFilter(ticket) &&
-    ticketMatchesSearchQuery(ticket);
+  const ticketMatchesBaseIssueFilters = useCallback(
+    (ticket: TeaTicket) =>
+      ticketMatchesStateFilter(ticket) &&
+      ticketMatchesAuthorFilter(ticket) &&
+      ticketMatchesLabelFilter(ticket) &&
+      ticketMatchesSearchQuery(ticket),
+    [
+      ticketMatchesStateFilter,
+      ticketMatchesAuthorFilter,
+      ticketMatchesLabelFilter,
+      ticketMatchesSearchQuery,
+    ],
+  );
 
-  const ticketMatchesSignalFilter = (ticket: TeaTicket) => {
-    if (issueSignalFilter === "all") return true;
-    const issueSignal = issueSignalForTicket(ticket, issueMetrics[ticket.id]);
-    return issueSignalFilterKey(issueSignal) === issueSignalFilter;
-  };
+  const ticketMatchesSignalFilter = useCallback(
+    (ticket: TeaTicket) => {
+      if (issueSignalFilter === "all") return true;
+      const issueSignal = issueSignalForTicket(ticket, issueMetrics[ticket.id]);
+      return issueSignalFilterKey(issueSignal) === issueSignalFilter;
+    },
+    [issueSignalFilter, issueMetrics],
+  );
 
-  const ticketMatchesPriorityFilter = (ticket: TeaTicket) =>
-    issuePriorityFilter === "all" || badgeToneForPriority(ticket.priority) === "danger";
+  const ticketMatchesPriorityFilter = useCallback(
+    (ticket: TeaTicket) =>
+      issuePriorityFilter === "all" || badgeToneForPriority(ticket.priority) === "danger",
+    [issuePriorityFilter],
+  );
 
-  const ticketMatchesRiskFilter = (ticket: TeaTicket) =>
-    issueRiskFilter === "all" || badgeToneForRisk(ticket.risk_level) === "danger";
+  const ticketMatchesRiskFilter = useCallback(
+    (ticket: TeaTicket) =>
+      issueRiskFilter === "all" || badgeToneForRisk(ticket.risk_level) === "danger",
+    [issueRiskFilter],
+  );
 
-  const ticketMatchesWatchFilter = (ticket: TeaTicket) =>
-    issueWatchFilter === "all" || Boolean(watchStates[ticket.id]);
+  const ticketMatchesWatchFilter = useCallback(
+    (ticket: TeaTicket) => issueWatchFilter === "all" || Boolean(watchStates[ticket.id]),
+    [issueWatchFilter, watchStates],
+  );
 
-  const issueSignalCounts = tickets.reduce<IssueSignalCounts>((counts, ticket) => {
-    if (!ticketMatchesBaseIssueFilters(ticket)) return counts;
-    const key = issueSignalFilterKey(issueSignalForTicket(ticket, issueMetrics[ticket.id]));
-    counts[key] += 1;
-    return counts;
-  }, emptyIssueSignalCounts());
+  const issueSignalCounts = useMemo(
+    () =>
+      tickets.reduce<IssueSignalCounts>((counts, ticket) => {
+        if (!ticketMatchesBaseIssueFilters(ticket)) return counts;
+        const key = issueSignalFilterKey(issueSignalForTicket(ticket, issueMetrics[ticket.id]));
+        counts[key] += 1;
+        return counts;
+      }, emptyIssueSignalCounts()),
+    [tickets, ticketMatchesBaseIssueFilters, issueMetrics],
+  );
   const issueSignalTotal = Object.values(issueSignalCounts).reduce((total, count) => total + count, 0);
   const issueSignalCountForOption = (value: IssueSignalFilter) =>
     value === "all" ? issueSignalTotal : issueSignalCounts[value];
-  const issueTriageFilterCounts = {
-    highPriority: tickets.filter(
-      (ticket) => ticketMatchesBaseIssueFilters(ticket) && ticketMatchesSignalFilter(ticket) && badgeToneForPriority(ticket.priority) === "danger",
-    ).length,
-    highRisk: tickets.filter(
-      (ticket) => ticketMatchesBaseIssueFilters(ticket) && ticketMatchesSignalFilter(ticket) && badgeToneForRisk(ticket.risk_level) === "danger",
-    ).length,
-    watched: tickets.filter(
-      (ticket) => ticketMatchesBaseIssueFilters(ticket) && ticketMatchesSignalFilter(ticket) && Boolean(watchStates[ticket.id]),
-    ).length,
-  };
+  const issueTriageFilterCounts = useMemo(
+    () => ({
+      highPriority: tickets.filter(
+        (ticket) => ticketMatchesBaseIssueFilters(ticket) && ticketMatchesSignalFilter(ticket) && badgeToneForPriority(ticket.priority) === "danger",
+      ).length,
+      highRisk: tickets.filter(
+        (ticket) => ticketMatchesBaseIssueFilters(ticket) && ticketMatchesSignalFilter(ticket) && badgeToneForRisk(ticket.risk_level) === "danger",
+      ).length,
+      watched: tickets.filter(
+        (ticket) => ticketMatchesBaseIssueFilters(ticket) && ticketMatchesSignalFilter(ticket) && Boolean(watchStates[ticket.id]),
+      ).length,
+    }),
+    [tickets, ticketMatchesBaseIssueFilters, ticketMatchesSignalFilter, watchStates],
+  );
   const ticketMatchesPresetQueue = (ticket: TeaTicket, queue: IssuePresetQueue) => {
     const matchesState =
       queue.issueFilter === "all" ||
@@ -1172,11 +1210,8 @@ export default function App() {
   const issuePresetQueueCount = (queue: IssuePresetQueue) =>
     tickets.filter((ticket) => ticketMatchesPresetQueue(ticket, queue)).length;
 
-  // Memoized so the downstream sortedTickets/visibleTickets memos are actually
-  // effective (they depend on filteredTickets; an inline array rebuilt every render
-  // defeated them). Deps list every piece of state the filter predicates read — the
-  // predicate closures themselves are intentionally omitted (they are recreated each
-  // render, which would defeat the memo).
+  // Memoized so the downstream sortedTickets/visibleTickets memos are effective.
+  // Depends on the stabilized filter predicates, so eslint react-hooks verifies the deps.
   const filteredTickets = useMemo(
     () =>
       tickets.filter((ticket) => {
@@ -1188,20 +1223,13 @@ export default function App() {
           ticketMatchesWatchFilter(ticket)
         );
       }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [
       tickets,
-      issueFilter,
-      authorFilter,
-      selectedLabelFilter,
-      localNotes,
-      searchQuery,
-      issueSignalFilter,
-      issueMetrics,
-      issuePriorityFilter,
-      issueRiskFilter,
-      issueWatchFilter,
-      watchStates,
+      ticketMatchesBaseIssueFilters,
+      ticketMatchesSignalFilter,
+      ticketMatchesPriorityFilter,
+      ticketMatchesRiskFilter,
+      ticketMatchesWatchFilter,
     ],
   );
   const sortedTickets = useMemo(() => {
