@@ -51,3 +51,12 @@ tea_hook = { path = "crates/tea_hook" }
 tea_audit = { path = "crates/tea_audit" }
 tea_mcp = { path = "crates/tea_mcp" }
 tea_sync = { path = "crates/tea_sync" }
+
+# Aggressive release profile: smallest, fastest binaries at the cost of longer
+# compile times. fat LTO + single codegen unit maximize cross-crate optimization;
+# strip removes symbols. Applies to all workspace members' release builds.
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true

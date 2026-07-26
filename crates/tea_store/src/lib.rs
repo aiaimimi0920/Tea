@@ -776,15 +776,17 @@ impl TicketStore for SqliteTicketStore {
             approval_policy,
             options,
         );
-        let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let mut guard = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let conn = guard.transaction()?;
         insert_ticket(&conn, &ticket)?;
         push_sqlite_event(&conn, &ticket.id, actor, TicketEventKind::TicketCreated)?;
+        conn.commit()?;
         Ok(ticket)
     }
 
     async fn list_tickets(&self) -> Result<Vec<Ticket>, StoreError> {
         let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
-        let mut statement = conn.prepare("SELECT json FROM tickets ORDER BY ordinal ASC")?;
+        let mut statement = conn.prepare_cached("SELECT json FROM tickets ORDER BY ordinal ASC")?;
         let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
         decode_rows(rows)
     }
@@ -797,8 +799,8 @@ impl TicketStore for SqliteTicketStore {
     async fn ticket_events(&self, id: &TicketId) -> Result<Vec<TicketEvent>, StoreError> {
         let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
         ensure_sqlite_ticket(&conn, id)?;
-        let mut statement =
-            conn.prepare("SELECT json FROM events WHERE ticket_id = ?1 ORDER BY ordinal ASC")?;
+        let mut statement = conn
+            .prepare_cached("SELECT json FROM events WHERE ticket_id = ?1 ORDER BY ordinal ASC")?;
         let rows = statement.query_map(params![id.to_string()], |row| row.get::<_, String>(0))?;
         decode_rows(rows)
     }
@@ -806,8 +808,9 @@ impl TicketStore for SqliteTicketStore {
     async fn ticket_comments(&self, id: &TicketId) -> Result<Vec<TicketComment>, StoreError> {
         let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
         ensure_sqlite_ticket(&conn, id)?;
-        let mut statement =
-            conn.prepare("SELECT json FROM comments WHERE ticket_id = ?1 ORDER BY ordinal ASC")?;
+        let mut statement = conn.prepare_cached(
+            "SELECT json FROM comments WHERE ticket_id = ?1 ORDER BY ordinal ASC",
+        )?;
         let rows = statement.query_map(params![id.to_string()], |row| row.get::<_, String>(0))?;
         decode_rows(rows)
     }
@@ -818,7 +821,8 @@ impl TicketStore for SqliteTicketStore {
         actor: ActorRef,
         body: String,
     ) -> Result<TicketComment, StoreError> {
-        let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let mut guard = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let conn = guard.transaction()?;
         let mut ticket = get_sqlite_ticket(&conn, ticket_id)?;
         ensure_ticket_mutable_for(&ticket, "add comment to")?;
         ticket.touch();
@@ -835,6 +839,7 @@ impl TicketStore for SqliteTicketStore {
             ],
         )?;
         push_sqlite_event(&conn, ticket_id, actor, TicketEventKind::CommentAdded)?;
+        conn.commit()?;
         Ok(comment)
     }
 
@@ -844,7 +849,8 @@ impl TicketStore for SqliteTicketStore {
         actor: ActorRef,
         analysis: TicketAnalysis,
     ) -> Result<TicketAnalysis, StoreError> {
-        let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let mut guard = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let conn = guard.transaction()?;
         let mut ticket = get_sqlite_ticket(&conn, ticket_id)?;
         ensure_ticket_mutable_for(&ticket, "analyze")?;
         ticket.status = if analysis.missing_context.is_empty() {
@@ -861,6 +867,7 @@ impl TicketStore for SqliteTicketStore {
             params![ticket_id.to_string(), encode(&analysis)?],
         )?;
         push_sqlite_event(&conn, ticket_id, actor, TicketEventKind::TicketAnalyzed)?;
+        conn.commit()?;
         Ok(analysis)
     }
 
@@ -870,7 +877,8 @@ impl TicketStore for SqliteTicketStore {
         actor: ActorRef,
         plan: Plan,
     ) -> Result<Plan, StoreError> {
-        let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let mut guard = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let conn = guard.transaction()?;
         let mut ticket = get_sqlite_ticket(&conn, ticket_id)?;
         ensure_ticket_mutable_for(&ticket, "plan")?;
         ticket.status = if plan.requires_approval_before_execute {
@@ -886,6 +894,7 @@ impl TicketStore for SqliteTicketStore {
             params![ticket_id.to_string(), encode(&plan)?],
         )?;
         push_sqlite_event(&conn, ticket_id, actor, TicketEventKind::PlanProposed)?;
+        conn.commit()?;
         Ok(plan)
     }
 
@@ -924,12 +933,14 @@ impl TicketStore for SqliteTicketStore {
         actor: ActorRef,
         policy: ApprovalPolicy,
     ) -> Result<Ticket, StoreError> {
-        let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let mut guard = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let conn = guard.transaction()?;
         let mut ticket = get_sqlite_ticket(&conn, ticket_id)?;
         ensure_ticket_mutable_for(&ticket, "update policy for")?;
         ticket.set_approval_policy(policy);
         update_ticket(&conn, &ticket)?;
         push_sqlite_event(&conn, ticket_id, actor, TicketEventKind::PolicyUpdated)?;
+        conn.commit()?;
         Ok(ticket)
     }
 
@@ -939,7 +950,8 @@ impl TicketStore for SqliteTicketStore {
         actor: ActorRef,
         edits: TicketEdits,
     ) -> Result<Ticket, StoreError> {
-        let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let mut guard = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let conn = guard.transaction()?;
         let mut ticket = get_sqlite_ticket(&conn, ticket_id)?;
         ensure_ticket_mutable_for(&ticket, "edit")?;
         let changed = ticket.apply_edits(edits);
@@ -947,6 +959,7 @@ impl TicketStore for SqliteTicketStore {
             update_ticket(&conn, &ticket)?;
             push_sqlite_event(&conn, ticket_id, actor, TicketEventKind::TicketEdited)?;
         }
+        conn.commit()?;
         Ok(ticket)
     }
 
@@ -955,7 +968,8 @@ impl TicketStore for SqliteTicketStore {
         ticket_id: &TicketId,
         actor: ActorRef,
     ) -> Result<Ticket, StoreError> {
-        let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let mut guard = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let conn = guard.transaction()?;
         let mut ticket = get_sqlite_ticket(&conn, ticket_id)?;
         ensure_ticket_mutable_for(&ticket, "approve")?;
         ticket.status = TicketStatus::Approved;
@@ -967,6 +981,7 @@ impl TicketStore for SqliteTicketStore {
             params![ticket_id.to_string()],
         )?;
         push_sqlite_event(&conn, ticket_id, actor, TicketEventKind::ApprovalGranted)?;
+        conn.commit()?;
         Ok(ticket)
     }
 
@@ -976,7 +991,8 @@ impl TicketStore for SqliteTicketStore {
         actor: ActorRef,
         reason: String,
     ) -> Result<Ticket, StoreError> {
-        let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let mut guard = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let conn = guard.transaction()?;
         let mut ticket = get_sqlite_ticket(&conn, ticket_id)?;
         ensure_ticket_mutable_for(&ticket, "reject approval for")?;
         ticket.status = TicketStatus::Blocked;
@@ -988,6 +1004,7 @@ impl TicketStore for SqliteTicketStore {
             params![ticket_id.to_string(), reason],
         )?;
         push_sqlite_event(&conn, ticket_id, actor, TicketEventKind::ApprovalRejected)?;
+        conn.commit()?;
         Ok(ticket)
     }
 
@@ -1010,7 +1027,8 @@ impl TicketStore for SqliteTicketStore {
         actor: ActorRef,
         run: Run,
     ) -> Result<Run, StoreError> {
-        let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let mut guard = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let conn = guard.transaction()?;
         let mut ticket = get_sqlite_ticket(&conn, ticket_id)?;
         ensure_ticket_can_run(&ticket)?;
         ensure_run_belongs_to_ticket(&run, ticket_id)?;
@@ -1043,6 +1061,7 @@ impl TicketStore for SqliteTicketStore {
             }
             _ => {}
         }
+        conn.commit()?;
         Ok(run)
     }
 
@@ -1053,7 +1072,8 @@ impl TicketStore for SqliteTicketStore {
         actor: ActorRef,
         status: RunStatus,
     ) -> Result<Run, StoreError> {
-        let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let mut guard = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let conn = guard.transaction()?;
         let mut ticket = get_sqlite_ticket(&conn, ticket_id)?;
         ensure_ticket_mutable_for(&ticket, "update run status for")?;
         let mut run = get_sqlite_run(&conn, run_id)?;
@@ -1070,6 +1090,7 @@ impl TicketStore for SqliteTicketStore {
         ticket.touch();
         update_ticket(&conn, &ticket)?;
         push_sqlite_event(&conn, ticket_id, actor, TicketEventKind::RunEventReceived)?;
+        conn.commit()?;
         Ok(run)
     }
 
@@ -1089,7 +1110,8 @@ impl TicketStore for SqliteTicketStore {
         ticket_id: &TicketId,
         actor: ActorRef,
     ) -> Result<Ticket, StoreError> {
-        let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let mut guard = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let conn = guard.transaction()?;
         let mut ticket = get_sqlite_ticket(&conn, ticket_id)?;
         ensure_ticket_mutable_for(&ticket, "accept")?;
         let has_evidence = list_sqlite_runs(&conn, ticket_id)?
@@ -1102,6 +1124,7 @@ impl TicketStore for SqliteTicketStore {
         ticket.touch();
         update_ticket(&conn, &ticket)?;
         push_sqlite_event(&conn, ticket_id, actor, TicketEventKind::HumanAccepted)?;
+        conn.commit()?;
         Ok(ticket)
     }
 
@@ -1110,7 +1133,8 @@ impl TicketStore for SqliteTicketStore {
         ticket_id: &TicketId,
         actor: ActorRef,
     ) -> Result<Ticket, StoreError> {
-        let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let mut guard = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let conn = guard.transaction()?;
         let mut ticket = get_sqlite_ticket(&conn, ticket_id)?;
         ensure_ticket_mutable_for(&ticket, "close")?;
         let has_evidence = list_sqlite_runs(&conn, ticket_id)?
@@ -1123,6 +1147,7 @@ impl TicketStore for SqliteTicketStore {
         ticket.touch();
         update_ticket(&conn, &ticket)?;
         push_sqlite_event(&conn, ticket_id, actor, TicketEventKind::TicketClosed)?;
+        conn.commit()?;
         Ok(ticket)
     }
 
@@ -1131,13 +1156,15 @@ impl TicketStore for SqliteTicketStore {
         ticket_id: &TicketId,
         actor: ActorRef,
     ) -> Result<Ticket, StoreError> {
-        let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let mut guard = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let conn = guard.transaction()?;
         let mut ticket = get_sqlite_ticket(&conn, ticket_id)?;
         ensure_ticket_mutable_for(&ticket, "cancel")?;
         ticket.status = TicketStatus::Cancelled;
         ticket.touch();
         update_ticket(&conn, &ticket)?;
         push_sqlite_event(&conn, ticket_id, actor, TicketEventKind::TicketCancelled)?;
+        conn.commit()?;
         Ok(ticket)
     }
 }
@@ -1422,10 +1449,33 @@ fn init_sqlite(conn: &mut Connection) -> Result<(), StoreError> {
         r#"
         PRAGMA journal_mode = WAL;
         PRAGMA foreign_keys = ON;
+        -- Wait up to 5s for a competing writer instead of failing immediately with
+        -- "database is locked" (WAL still allows only a single writer at a time).
+        PRAGMA busy_timeout = 5000;
+        -- Safe with WAL: only fsyncs the WAL at checkpoints, dramatically reducing
+        -- per-write fsync cost while preserving durability across app crashes.
+        PRAGMA synchronous = NORMAL;
+        -- Keep temporary indices/tables in memory rather than spilling to disk.
+        PRAGMA temp_store = MEMORY;
         "#,
     )?;
     ensure_schema_migrations_table(conn)?;
     apply_sqlite_migrations(conn)?;
+    // Ensure indexes on every open (idempotent) so existing databases created before
+    // an index was added still receive it without a schema-version migration.
+    ensure_sqlite_indexes(conn)?;
+    Ok(())
+}
+
+fn ensure_sqlite_indexes(conn: &Connection) -> Result<(), StoreError> {
+    conn.execute_batch(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_tickets_ordinal ON tickets(ordinal);
+        CREATE INDEX IF NOT EXISTS idx_comments_ticket_ordinal ON comments(ticket_id, ordinal);
+        CREATE INDEX IF NOT EXISTS idx_events_ticket_ordinal ON events(ticket_id, ordinal);
+        CREATE INDEX IF NOT EXISTS idx_runs_ticket_ordinal ON runs(ticket_id, ordinal);
+        "#,
+    )?;
     Ok(())
 }
 
@@ -1525,12 +1575,9 @@ fn create_sqlite_v1_schema(conn: &Connection) -> Result<(), StoreError> {
             json TEXT NOT NULL,
             FOREIGN KEY(ticket_id) REFERENCES tickets(id)
         );
-
-        CREATE INDEX IF NOT EXISTS idx_comments_ticket_ordinal ON comments(ticket_id, ordinal);
-        CREATE INDEX IF NOT EXISTS idx_events_ticket_ordinal ON events(ticket_id, ordinal);
-        CREATE INDEX IF NOT EXISTS idx_runs_ticket_ordinal ON runs(ticket_id, ordinal);
         "#,
     )?;
+    // Indexes are created idempotently in `ensure_sqlite_indexes` (run on every open).
     Ok(())
 }
 
@@ -1643,7 +1690,7 @@ fn get_sqlite_run(conn: &Connection, run_id: &RunId) -> Result<Run, StoreError> 
 fn list_sqlite_runs(conn: &Connection, ticket_id: &TicketId) -> Result<Vec<Run>, StoreError> {
     ensure_sqlite_ticket(conn, ticket_id)?;
     let mut statement =
-        conn.prepare("SELECT json FROM runs WHERE ticket_id = ?1 ORDER BY ordinal ASC")?;
+        conn.prepare_cached("SELECT json FROM runs WHERE ticket_id = ?1 ORDER BY ordinal ASC")?;
     let rows = statement.query_map(params![ticket_id.to_string()], |row| {
         row.get::<_, String>(0)
     })?;

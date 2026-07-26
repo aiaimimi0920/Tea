@@ -20,3 +20,12 @@ serde_json = "1"
 tauri = { version = "=2.11.2", features = [] }
 
 [workspace]
+
+# Aggressive release profile for the packaged desktop binary: fat LTO + single
+# codegen unit + size optimization + symbol stripping. Increases build time
+# (fat LTO on the Tauri dependency tree is notably slower) for a smaller exe.
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
