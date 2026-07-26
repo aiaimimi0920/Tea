@@ -373,3 +373,28 @@ export interface TeaIssueMetric {
 export async function getIssueMetrics(options?: TeaClientOptions): Promise<TeaIssueMetric[]> {
   return requestJson<TeaIssueMetric[]>("GET", "/v1/tickets/metrics", undefined, options);
 }
+
+export interface TeaTicketBundle {
+  ticket: TeaTicket;
+  comments: TeaComment[];
+  events: TeaEvent[];
+  runs: TeaRun[];
+  analysis: TeaAnalysis | null;
+  plan: TeaPlan | null;
+}
+
+/**
+ * Full ticket detail (ticket + comments + events + runs + analysis + plan) in one
+ * request, replacing the previous six-call fan-out on every ticket selection.
+ */
+export async function getTicketBundle(
+  id: string,
+  options?: TeaClientOptions,
+): Promise<TeaTicketBundle> {
+  return requestJson<TeaTicketBundle>(
+    "GET",
+    `/v1/tickets/${encodeURIComponent(id)}/bundle`,
+    undefined,
+    options,
+  );
+}

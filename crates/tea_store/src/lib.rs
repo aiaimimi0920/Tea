@@ -81,6 +81,18 @@ pub struct TicketMetrics {
     pub latest_event: Option<TicketEvent>,
 }
 
+/// Everything needed to render a ticket detail view, fetched in a single request
+/// so the UI does not fan out into one call each for comments/events/runs/analysis/plan.
+#[derive(Debug, Clone, Serialize)]
+pub struct TicketBundle {
+    pub ticket: Ticket,
+    pub comments: Vec<TicketComment>,
+    pub events: Vec<TicketEvent>,
+    pub runs: Vec<Run>,
+    pub analysis: Option<TicketAnalysis>,
+    pub plan: Option<Plan>,
+}
+
 #[async_trait]
 pub trait TicketStore: Send + Sync {
     async fn store_status(&self) -> Result<StoreStatus, StoreError>;
@@ -134,6 +146,8 @@ pub trait TicketStore: Send + Sync {
     async fn list_tickets(&self) -> Result<Vec<Ticket>, StoreError>;
     /// Per-ticket aggregated metrics for every ticket, in `list_tickets` order.
     async fn ticket_metrics(&self) -> Result<Vec<TicketMetrics>, StoreError>;
+    /// Full detail view for one ticket, read under a single lock.
+    async fn ticket_bundle(&self, id: &TicketId) -> Result<TicketBundle, StoreError>;
     async fn get_ticket(&self, id: &TicketId) -> Result<Ticket, StoreError>;
     async fn ticket_events(&self, id: &TicketId) -> Result<Vec<TicketEvent>, StoreError>;
     async fn ticket_comments(&self, id: &TicketId) -> Result<Vec<TicketComment>, StoreError>;
@@ -350,6 +364,30 @@ impl TicketStore for InMemoryTicketStore {
                 latest_event: inner.events.get(id).and_then(|e| e.last().cloned()),
             })
             .collect())
+    }
+
+    async fn ticket_bundle(&self, id: &TicketId) -> Result<TicketBundle, StoreError> {
+        let inner = self.inner.lock().map_err(|_| StoreError::LockPoisoned)?;
+        let ticket = inner
+            .tickets
+            .get(id)
+            .cloned()
+            .ok_or(StoreError::TicketNotFound)?;
+        let runs = inner
+            .runs_by_ticket
+            .get(id)
+            .into_iter()
+            .flatten()
+            .filter_map(|run_id| inner.runs.get(run_id).cloned())
+            .collect();
+        Ok(TicketBundle {
+            ticket,
+            comments: inner.comments.get(id).cloned().unwrap_or_default(),
+            events: inner.events.get(id).cloned().unwrap_or_default(),
+            runs,
+            analysis: inner.analyses.get(id).cloned(),
+            plan: inner.plans.get(id).cloned(),
+        })
     }
 
     async fn get_ticket(&self, id: &TicketId) -> Result<Ticket, StoreError> {
@@ -851,6 +889,56 @@ impl TicketStore for SqliteTicketStore {
             .collect())
     }
 
+    async fn ticket_bundle(&self, id: &TicketId) -> Result<TicketBundle, StoreError> {
+        let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        // Holding the single connection lock for the whole read yields a consistent
+        // snapshot without a separate transaction (all writers share this mutex).
+        let ticket = get_sqlite_ticket(&conn, id)?;
+        let comments: Vec<TicketComment> = {
+            let mut statement = conn.prepare_cached(
+                "SELECT json FROM comments WHERE ticket_id = ?1 ORDER BY ordinal ASC",
+            )?;
+            let rows =
+                statement.query_map(params![id.to_string()], |row| row.get::<_, String>(0))?;
+            decode_rows(rows)?
+        };
+        let events: Vec<TicketEvent> = {
+            let mut statement = conn.prepare_cached(
+                "SELECT json FROM events WHERE ticket_id = ?1 ORDER BY ordinal ASC",
+            )?;
+            let rows =
+                statement.query_map(params![id.to_string()], |row| row.get::<_, String>(0))?;
+            decode_rows(rows)?
+        };
+        let runs = list_sqlite_runs(&conn, id)?;
+        let analysis: Option<TicketAnalysis> = conn
+            .query_row(
+                "SELECT json FROM analyses WHERE ticket_id = ?1",
+                params![id.to_string()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(decode)
+            .transpose()?;
+        let plan: Option<Plan> = conn
+            .query_row(
+                "SELECT json FROM plans WHERE ticket_id = ?1",
+                params![id.to_string()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(decode)
+            .transpose()?;
+        Ok(TicketBundle {
+            ticket,
+            comments,
+            events,
+            runs,
+            analysis,
+            plan,
+        })
+    }
+
     async fn get_ticket(&self, id: &TicketId) -> Result<Ticket, StoreError> {
         let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
         get_sqlite_ticket(&conn, id)
@@ -1299,6 +1387,13 @@ impl TicketStore for RuntimeTicketStore {
         match self {
             Self::Memory(store) => store.ticket_metrics().await,
             Self::Sqlite(store) => store.ticket_metrics().await,
+        }
+    }
+
+    async fn ticket_bundle(&self, id: &TicketId) -> Result<TicketBundle, StoreError> {
+        match self {
+            Self::Memory(store) => store.ticket_bundle(id).await,
+            Self::Sqlite(store) => store.ticket_bundle(id).await,
         }
     }
 
@@ -1962,6 +2057,51 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["A", "B"]
         );
+    }
+
+    async fn assert_ticket_bundle_scenario(store: &impl TicketStore) {
+        let ticket = store
+            .create_ticket(
+                "Bundle".to_string(),
+                "body".to_string(),
+                TicketSource::Human,
+                ActorRef::human("vmjcv"),
+            )
+            .await
+            .unwrap();
+        store
+            .add_comment(&ticket.id, ActorRef::human("vmjcv"), "note".to_string())
+            .await
+            .unwrap();
+        store
+            .add_run(&ticket.id, ActorRef::system(), successful_run(&ticket.id))
+            .await
+            .unwrap();
+
+        let bundle = store.ticket_bundle(&ticket.id).await.unwrap();
+        assert_eq!(bundle.ticket.id, ticket.id);
+        assert_eq!(bundle.comments.len(), 1);
+        assert_eq!(bundle.comments[0].body, "note");
+        assert_eq!(bundle.runs.len(), 1);
+        assert!(!bundle.events.is_empty());
+        assert!(bundle.analysis.is_none());
+        assert!(bundle.plan.is_none());
+
+        let missing = store.ticket_bundle(&TicketId::new()).await;
+        assert!(matches!(missing, Err(StoreError::TicketNotFound)));
+    }
+
+    #[tokio::test]
+    async fn ticket_bundle_reads_detail_in_memory() {
+        let store = InMemoryTicketStore::default();
+        assert_ticket_bundle_scenario(&store).await;
+    }
+
+    #[tokio::test]
+    async fn sqlite_ticket_bundle_reads_detail() {
+        let path = temp_store_path("tea-store-sqlite-ticket-bundle");
+        let store = SqliteTicketStore::open(&path).unwrap();
+        assert_ticket_bundle_scenario(&store).await;
     }
 
     async fn assert_ticket_metrics_scenario(store: &impl TicketStore) {

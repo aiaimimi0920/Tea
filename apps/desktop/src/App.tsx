@@ -16,13 +16,8 @@ import {
   addComment,
   createTicket,
   exportTicket,
-  getAnalysis,
   getIssueMetrics,
-  getPlan,
-  getTicket,
-  listComments,
-  listEvents,
-  listRuns,
+  getTicketBundle,
   readSnapshot,
   rejectTicket,
   resolveRuntimeConfig,
@@ -1588,23 +1583,18 @@ export default function App() {
 
   const refreshDetail = async (id: string) => {
     try {
-      const [ticket, nextComments, nextEvents, nextRuns, nextAnalysis, nextPlan] = await Promise.all([
-        getTicket(id, options),
-        listComments(id, options),
-        listEvents(id, options),
-        listRuns(id, options),
-        getAnalysis(id, options).catch(() => null),
-        getPlan(id, options).catch(() => null),
-      ]);
-      setSelectedTicket(ticket);
-      setComments(nextComments);
-      setEvents(nextEvents);
-      setRuns(nextRuns);
-      setAnalysis(nextAnalysis);
-      setPlan(nextPlan);
+      // Single aggregated request replaces the previous six-call fan-out
+      // (ticket + comments + events + runs + analysis + plan) per selection.
+      const bundle = await getTicketBundle(id, options);
+      setSelectedTicket(bundle.ticket);
+      setComments(bundle.comments);
+      setEvents(bundle.events);
+      setRuns(bundle.runs);
+      setAnalysis(bundle.analysis);
+      setPlan(bundle.plan);
       setIssueMetrics((current) => ({
         ...current,
-        [id]: { comments: nextComments.length, runs: nextRuns.length },
+        [id]: { comments: bundle.comments.length, runs: bundle.runs.length },
       }));
     } catch (error) {
       notify(`Failed to read ticket: ${String(error)}`);

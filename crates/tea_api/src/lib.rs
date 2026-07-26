@@ -257,6 +257,10 @@ where
             get(get_ticket::<S, B, L>).patch(edit_ticket::<S, B, L>),
         )
         .route(
+            "/v1/tickets/:ticket_id/bundle",
+            get(ticket_bundle::<S, B, L>),
+        )
+        .route(
             "/v1/tickets/:ticket_id/comments",
             get(ticket_comments::<S, B, L>).post(add_comment::<S, B, L>),
         )
@@ -786,6 +790,23 @@ where
         state
             .store
             .get_ticket(&parse_ticket_id(&ticket_id)?)
+            .await?
+    )))
+}
+
+async fn ticket_bundle<S, A, L>(
+    State(state): State<AppState<S, A, L>>,
+    headers: HeaderMap,
+    Path(ticket_id): Path<String>,
+) -> Result<Json<Value>, ApiError>
+where
+    S: TicketStore,
+{
+    require_auth(&state.auth, &headers)?;
+    Ok(Json(json!(
+        state
+            .store
+            .ticket_bundle(&parse_ticket_id(&ticket_id)?)
             .await?
     )))
 }
@@ -1703,6 +1724,60 @@ mod tests {
         assert_eq!(entries[0]["comments_count"], 1);
         assert_eq!(entries[0]["runs_count"], 0);
         assert_eq!(entries[0]["latest_comment"]["body"], "note");
+    }
+
+    #[tokio::test]
+    async fn v1_ticket_bundle_returns_detail_in_one_response() {
+        let store = InMemoryTicketStore::default();
+        let ticket = store
+            .create_ticket(
+                "Bundle".to_string(),
+                "body".to_string(),
+                tea_core::TicketSource::Human,
+                tea_core::ActorRef::human("vmjcv"),
+            )
+            .await
+            .unwrap();
+        store
+            .add_comment(
+                &ticket.id,
+                tea_core::ActorRef::human("vmjcv"),
+                "note".to_string(),
+            )
+            .await
+            .unwrap();
+
+        let app = router(AppState::new(
+            store.clone(),
+            tea_brain::TemplateBrainProvider,
+            tea_loom::MockLoomClient,
+            AuthConfig::new("dev-token".to_string()),
+        ));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/v1/tickets/{}/bundle", ticket.id))
+                    .header("authorization", "Bearer dev-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["ticket"]["id"], json!(ticket.id));
+        assert_eq!(
+            body["comments"].as_array().expect("comments array").len(),
+            1
+        );
+        assert_eq!(body["comments"][0]["body"], "note");
+        assert!(!body["events"].as_array().expect("events array").is_empty());
+        assert!(body["analysis"].is_null());
+        assert!(body["plan"].is_null());
     }
 
     #[tokio::test]
