@@ -1,0 +1,20 @@
+[package]
+name = "tea-sync"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Tea external issue-tracker sync CLI (GitHub/Gitea -> Tea tickets)"
+
+[[bin]]
+name = "tea-sync"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+reqwest.workspace = true
+serde_json.workspace = true
+tea_sync.workspace = true
+tokio.workspace = true

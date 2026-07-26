@@ -1,0 +1,20 @@
+[package]
+name = "tea-mcp"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Tea MCP stdio server bridging Model Context Protocol clients to the Tea HTTP API"
+
+[[bin]]
+name = "tea-mcp"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+reqwest.workspace = true
+serde_json.workspace = true
+tea_mcp.workspace = true
+tokio.workspace = true

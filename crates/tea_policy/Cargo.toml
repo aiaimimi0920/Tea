@@ -1,0 +1,12 @@
+[package]
+name = "tea_policy"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Tea approval and risk policy"
+
+[dependencies]
+tea_core.workspace = true
+thiserror.workspace = true

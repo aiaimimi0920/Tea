@@ -1,0 +1,12 @@
+[package]
+name = "tea_hook"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Tea Hook intake contracts"
+
+[dependencies]
+serde.workspace = true
+tea_core.workspace = true

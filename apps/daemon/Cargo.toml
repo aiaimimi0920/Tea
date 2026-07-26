@@ -1,0 +1,25 @@
+[package]
+name = "tea-daemon"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Tea HTTP daemon"
+
+[[bin]]
+name = "tea-daemon"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+clap.workspace = true
+reqwest.workspace = true
+serde_json.workspace = true
+tea_brain.workspace = true
+tea_api.workspace = true
+tea_config.workspace = true
+tea_loom.workspace = true
+tea_store.workspace = true
+tokio.workspace = true

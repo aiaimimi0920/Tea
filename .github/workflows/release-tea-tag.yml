@@ -1,0 +1,108 @@
+name: Release Tea Tag
+
+on:
+  push:
+    tags:
+      - 'V*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to publish manually
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release-windows-package:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          components: rustfmt
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            apps/desktop/src-tauri
+        env:
+          NODE_OPTIONS: --no-deprecation
+
+      - name: Install desktop npm dependencies
+        working-directory: apps/desktop
+        run: npm ci --no-audit --no-fund
+
+      - name: Desktop TypeScript typecheck
+        working-directory: apps/desktop
+        run: npm run typecheck
+
+      - name: Rust format check
+        run: cargo fmt --check --all
+
+      - name: Desktop Tauri Rust format check
+        run: cargo fmt --check --manifest-path apps/desktop/src-tauri/Cargo.toml
+
+      - name: Rust tests
+        run: cargo test --locked --workspace
+
+      - name: Desktop Tauri Rust tests
+        run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
+
+      - name: Resolve release tag
+        shell: powershell
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $tag = "${{ github.event.inputs.tag }}"
+          } else {
+            $tag = "${{ github.ref_name }}"
+          }
+
+          if ([string]::IsNullOrWhiteSpace($tag)) {
+            throw "Release tag is required."
+          }
+
+          if ($tag -notmatch '^V\d+\.\d+\.\d+$') {
+            throw "Release tag must match Vx.x.x. Received: $tag"
+          }
+
+          "TEA_TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build portable Tea release package
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-local-tea-release.ps1 -OutputDir "release\Tea" -VersionId "$env:TEA_TAG" -Force
+
+      - name: Package minimal release zip
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\package-release-zip.ps1 `
+            -PackageDir ".\release\Tea\$env:TEA_TAG" `
+            -OutputDir ".\release\Tea" `
+            -Tag "$env:TEA_TAG" `
+            -Force
+
+      - name: Publish portable GitHub release asset
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ env.TEA_TAG }}
+          name: ${{ env.TEA_TAG }}
+          generate_release_notes: true
+          files: |
+            release/Tea/tea-windows-x64-${{ env.TEA_TAG }}.zip
+          overwrite_files: true
+          fail_on_unmatched_files: true

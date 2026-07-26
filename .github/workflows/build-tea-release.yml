@@ -1,0 +1,69 @@
+name: Build Tea Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          components: rustfmt
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            apps/desktop/src-tauri
+        env:
+          NODE_OPTIONS: --no-deprecation
+
+      - name: Install desktop npm dependencies
+        working-directory: apps/desktop
+        run: npm ci --no-audit --no-fund
+
+      - name: Desktop TypeScript typecheck
+        working-directory: apps/desktop
+        run: npm run typecheck
+
+      - name: Rust format check
+        run: cargo fmt --check --all
+
+      - name: Desktop Tauri Rust format check
+        run: cargo fmt --check --manifest-path apps/desktop/src-tauri/Cargo.toml
+
+      - name: Rust tests
+        run: cargo test --locked --workspace
+
+      - name: Desktop Tauri Rust tests
+        run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
+
+      - name: Build portable Tea release package
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-local-tea-release.ps1 -OutputDir "release\Tea" -VersionId "ci-${{ github.run_number }}-${{ github.sha }}" -Force -AllowDirtyManifest
+
+      - name: Upload portable Tea release package
+        uses: actions/upload-artifact@v6
+        with:
+          name: tea-portable-windows-x64
+          path: release/Tea/ci-${{ github.run_number }}-${{ github.sha }}
+          if-no-files-found: error

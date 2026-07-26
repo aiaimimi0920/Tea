@@ -1,0 +1,13 @@
+{
+  "source": "hook",
+  "text": "Please analyze the current Gateway failure and create a safe execution plan.",
+  "context": {
+    "active_window": "PowerShell",
+    "selection_text": "cargo test failed in gateway provider tests",
+    "ocr_text": null,
+    "screenshot_ref": null,
+    "cwd": "C:\\Users\\Public\\nas_home\\AI\\GameEditor\\Neuro",
+    "app": "terminal"
+  },
+  "attachments": []
+}

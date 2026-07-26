@@ -1,0 +1,28 @@
+{
+  "name": "tea",
+  "version": "0.1.0",
+  "description": "Tea desktop shell for the local Tea daemon",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "rsbuild dev --port 1424",
+    "build": "rsbuild build",
+    "preview": "rsbuild preview",
+    "tauri": "tauri",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "2.11.0",
+    "react": "19.0.0",
+    "react-dom": "19.0.0"
+  },
+  "devDependencies": {
+    "@rsbuild/core": "^1.0.0",
+    "@rsbuild/plugin-react": "^1.0.0",
+    "@tauri-apps/cli": "2.11.2",
+    "@types/node": "^20.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "^5.0.0"
+  }
+}

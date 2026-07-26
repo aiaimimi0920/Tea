@@ -1,0 +1,44 @@
+# Build outputs
+target/
+**/target/
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/target-codex-verify/
+apps/desktop/node_modules/
+apps/desktop/dist/
+dist/
+build/
+coverage/
+
+# Runtime and local artifacts
+.runtime/
+**/.runtime/
+.tmp/
+tmp/
+tmp-*/
+release/
+*.log
+*.pid
+
+# Secrets / local env
+.env
+.env.*
+!.env.example
+*.pem
+*.p12
+*.pfx
+*secret*
+*token*
+*credential*
+*credentials*
+*cookies*
+*session*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.vscode/
+.idea/
+*.orig
+*.rej

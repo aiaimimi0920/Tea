@@ -1,0 +1,12 @@
+[package]
+name = "tea_audit"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Tea timeline and evidence formatting"
+
+[dependencies]
+serde_json.workspace = true
+tea_core.workspace = true

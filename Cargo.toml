@@ -1,0 +1,53 @@
+[workspace]
+resolver = "2"
+members = [
+    "apps/daemon",
+    "apps/cli",
+    "apps/mcp",
+    "apps/sync",
+    "crates/tea_core",
+    "crates/tea_store",
+    "crates/tea_policy",
+    "crates/tea_config",
+    "crates/tea_brain",
+    "crates/tea_loom",
+    "crates/tea_api",
+    "crates/tea_hook",
+    "crates/tea_audit",
+    "crates/tea_mcp",
+    "crates/tea_sync",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Neuro contributors"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/aiaimimi0920/Tea"
+
+[workspace.dependencies]
+anyhow = "1.0"
+async-trait = "0.1"
+axum = { version = "0.7", features = ["macros"] }
+chrono = { version = "0.4", features = ["clock", "serde"] }
+clap = { version = "4.5", features = ["derive", "env"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+rusqlite = { version = "0.32", features = ["bundled"] }
+thiserror = "1.0"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync"] }
+tower = { version = "0.5", features = ["util"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+tea_core = { path = "crates/tea_core" }
+tea_store = { path = "crates/tea_store" }
+tea_policy = { path = "crates/tea_policy" }
+tea_config = { path = "crates/tea_config" }
+tea_brain = { path = "crates/tea_brain" }
+tea_loom = { path = "crates/tea_loom" }
+tea_api = { path = "crates/tea_api" }
+tea_hook = { path = "crates/tea_hook" }
+tea_audit = { path = "crates/tea_audit" }
+tea_mcp = { path = "crates/tea_mcp" }
+tea_sync = { path = "crates/tea_sync" }
