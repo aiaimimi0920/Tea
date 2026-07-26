@@ -66,6 +66,24 @@ function Get-DefaultVersionId {
     return "dev-$(Get-Date -Format 'yyyyMMdd-HHmmss')-$shortSha"
 }
 
+function Get-RelativePathCompat {
+    # Windows PowerShell 5.1 lacks [System.IO.Path]::GetRelativePath (a .NET Core 2.1+ API),
+    # so compute the relative path via System.Uri, which works on both 5.1 and pwsh 7+.
+    param(
+        [string]$BasePath,
+        [string]$Path
+    )
+
+    $baseFull = [System.IO.Path]::GetFullPath($BasePath)
+    $sep = [System.IO.Path]::DirectorySeparatorChar
+    if (-not $baseFull.EndsWith($sep)) { $baseFull += $sep }
+    $targetFull = [System.IO.Path]::GetFullPath($Path)
+    $baseUri = New-Object System.Uri($baseFull)
+    $targetUri = New-Object System.Uri($targetFull)
+    $relative = [System.Uri]::UnescapeDataString($baseUri.MakeRelativeUri($targetUri).ToString())
+    return $relative
+}
+
 function New-FileRecord {
     param(
         [string]$BasePath,
@@ -73,7 +91,7 @@ function New-FileRecord {
         [string]$Kind
     )
 
-    $relative = [System.IO.Path]::GetRelativePath($BasePath, $Path).Replace("/", "\")
+    $relative = (Get-RelativePathCompat -BasePath $BasePath -Path $Path).Replace("/", "\")
     return [ordered]@{
         kind = $Kind
         path = $relative
@@ -110,7 +128,7 @@ function Write-Checksums {
         Where-Object { $_.FullName -ne $checksumPath } |
         Sort-Object FullName |
         ForEach-Object {
-            $relative = [System.IO.Path]::GetRelativePath($Destination, $_.FullName).Replace("/", "\")
+            $relative = (Get-RelativePathCompat -BasePath $Destination -Path $_.FullName).Replace("/", "\")
             $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
             $lines.Add("$hash  $relative")
         }
