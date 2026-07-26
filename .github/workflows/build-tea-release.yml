@@ -44,6 +44,10 @@ jobs:
         working-directory: apps/desktop
         run: npm run typecheck
 
+      - name: Desktop ESLint (react-hooks)
+        working-directory: apps/desktop
+        run: npm run lint
+
       - name: Rust format check
         run: cargo fmt --check --all
 

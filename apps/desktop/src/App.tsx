@@ -1,4 +1,4 @@
-import { FormEvent, memo, useEffect, useMemo, useState } from "react";
+import { FormEvent, memo, useCallback, useEffect, useMemo, useState } from "react";
 import {
   CreateTicketInput,
   TeaActorRef,
@@ -1047,7 +1047,7 @@ export default function App() {
 
   const clearActivityLog = () => setActivityLog([]);
 
-  const tickets = snapshot?.tickets ?? [];
+  const tickets = useMemo(() => snapshot?.tickets ?? [], [snapshot]);
   const availableLabels = useMemo(
     () =>
       Array.from(
@@ -1442,18 +1442,24 @@ export default function App() {
     setVisibleIssueLimit(issuePageSize);
   };
 
-  const ensureIssueVisibleInList = (ticketId: string) => {
-    const targetIndex = sortedTickets.findIndex((ticket) => ticket.id === ticketId);
-    if (targetIndex < 0) return;
-    setVisibleIssueLimit((current) => Math.max(current, targetIndex + 1));
-  };
+  const ensureIssueVisibleInList = useCallback(
+    (ticketId: string) => {
+      const targetIndex = sortedTickets.findIndex((ticket) => ticket.id === ticketId);
+      if (targetIndex < 0) return;
+      setVisibleIssueLimit((current) => Math.max(current, targetIndex + 1));
+    },
+    [sortedTickets],
+  );
 
-  const navigateIssueQueue = (ticketId: string | null) => {
-    if (!ticketId) return;
-    ensureIssueVisibleInList(ticketId);
-    setSelectedId(ticketId);
-    setSelectedTicket(sortedTickets.find((ticket) => ticket.id === ticketId) ?? null);
-  };
+  const navigateIssueQueue = useCallback(
+    (ticketId: string | null) => {
+      if (!ticketId) return;
+      ensureIssueVisibleInList(ticketId);
+      setSelectedId(ticketId);
+      setSelectedTicket(sortedTickets.find((ticket) => ticket.id === ticketId) ?? null);
+    },
+    [ensureIssueVisibleInList, sortedTickets],
+  );
 
   useEffect(() => {
     const handleIssueQueueShortcut = (event: KeyboardEvent) => {
@@ -3479,6 +3485,9 @@ function SettingsConfigEditor({
 
   useEffect(() => {
     setDraft(config);
+    // Intentionally reset the draft only when a persisted config field we edit changes,
+    // not on every `config` object identity change (which would discard in-progress edits).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     config.notifications_enabled,
     config.human_ticket_default_approval_policy,
