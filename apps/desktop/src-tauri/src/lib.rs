@@ -206,18 +206,15 @@ fn daemon_health_ok(base_url: &str, _token: &str) -> bool {
         None => return false,
     };
 
-    let mut stream = match TcpStream::connect_timeout(
-        &socket_addr,
-        std::time::Duration::from_millis(800),
-    ) {
-        Ok(stream) => stream,
-        Err(_) => return false,
-    };
+    let mut stream =
+        match TcpStream::connect_timeout(&socket_addr, std::time::Duration::from_millis(800)) {
+            Ok(stream) => stream,
+            Err(_) => return false,
+        };
     let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(800)));
     let _ = stream.set_write_timeout(Some(std::time::Duration::from_millis(800)));
 
-    let request =
-        format!("GET /health HTTP/1.0\r\nHost: {host}\r\nConnection: close\r\n\r\n");
+    let request = format!("GET /health HTTP/1.0\r\nHost: {host}\r\nConnection: close\r\n\r\n");
     if stream.write_all(request.as_bytes()).is_err() {
         return false;
     }
@@ -250,7 +247,12 @@ fn host_port_from_base_url(base_url: &str) -> Option<(String, u16)> {
         .trim()
         .trim_end_matches('/')
         .strip_prefix("http://")
-        .or_else(|| base_url.trim().trim_end_matches('/').strip_prefix("https://"))
+        .or_else(|| {
+            base_url
+                .trim()
+                .trim_end_matches('/')
+                .strip_prefix("https://")
+        })
         .unwrap_or(base_url.trim().trim_end_matches('/'));
     // Drop any path segment.
     let authority = without_scheme.split('/').next().unwrap_or(without_scheme);
@@ -331,9 +333,7 @@ fn sanitize_export_file_name(value: &str) -> String {
         .unwrap_or("")
         .trim();
     base.chars()
-        .filter(|c| {
-            c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ' ')
-        })
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ' '))
         .collect::<String>()
         .trim()
         .to_string()
