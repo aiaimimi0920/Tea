@@ -6,6 +6,7 @@ import {
   TeaComment,
   TeaClientOptions,
   TeaEvent,
+  TeaIssueMetric,
   TeaLocalConfig,
   TeaPlan,
   TeaRun,
@@ -16,6 +17,7 @@ import {
   createTicket,
   exportTicket,
   getAnalysis,
+  getIssueMetrics,
   getPlan,
   getTicket,
   listComments,
@@ -1472,19 +1474,22 @@ export default function App() {
       return;
     }
 
-    const entries = await Promise.all(
-      ticketIds.map(async (id) => {
-        const [nextComments, nextRuns, nextEvents] = await Promise.all([
-          listComments(id, options).catch(() => []),
-          listRuns(id, options).catch(() => []),
-          listEvents(id, options).catch(() => []),
-        ]);
-        const latestComment = [...nextComments].sort(
-          (left, right) => timestampValue(right.created_at) - timestampValue(left.created_at),
-        )[0];
-        const latestEvent = [...nextEvents].sort(
-          (left, right) => timestampValue(right.created_at) - timestampValue(left.created_at),
-        )[0];
+    // Single aggregated request replaces the previous comments+runs+events fan-out
+    // (which was 3 requests per ticket, re-run on every auto-refresh poll).
+    const wanted = new Set(ticketIds);
+    let metrics: TeaIssueMetric[];
+    try {
+      metrics = await getIssueMetrics(options);
+    } catch (error) {
+      notify(`Failed to read issue metrics: ${String(error)}`);
+      return;
+    }
+
+    const entries = metrics
+      .filter((metric) => wanted.has(metric.ticket_id))
+      .map((metric) => {
+        const latestComment = metric.latest_comment;
+        const latestEvent = metric.latest_event;
         const latestTouch = (() => {
           const commentTouch = latestComment
             ? {
@@ -1523,9 +1528,11 @@ export default function App() {
           }
           return commentTouch ?? eventTouch ?? undefined;
         })();
-        return [id, { comments: nextComments.length, latestTouch, runs: nextRuns.length }] as const;
-      }),
-    );
+        return [
+          metric.ticket_id,
+          { comments: metric.comments_count, latestTouch, runs: metric.runs_count },
+        ] as const;
+      });
     setIssueMetrics(Object.fromEntries(entries));
   };
 

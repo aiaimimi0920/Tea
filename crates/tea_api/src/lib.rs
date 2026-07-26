@@ -249,6 +249,9 @@ where
             "/v1/tickets",
             post(create_ticket::<S, B, L>).get(list_tickets::<S, B, L>),
         )
+        // Static segment; registered before the `/:ticket_id` param route (matchit
+        // gives static paths priority regardless, so "metrics" is never a ticket id).
+        .route("/v1/tickets/metrics", get(ticket_metrics::<S, B, L>))
         .route(
             "/v1/tickets/:ticket_id",
             get(get_ticket::<S, B, L>).patch(edit_ticket::<S, B, L>),
@@ -757,6 +760,17 @@ where
 {
     require_auth(&state.auth, &headers)?;
     Ok(Json(json!(state.store.list_tickets().await?)))
+}
+
+async fn ticket_metrics<S, A, L>(
+    State(state): State<AppState<S, A, L>>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError>
+where
+    S: TicketStore,
+{
+    require_auth(&state.auth, &headers)?;
+    Ok(Json(json!(state.store.ticket_metrics().await?)))
 }
 
 async fn get_ticket<S, A, L>(
@@ -1638,6 +1652,57 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn v1_ticket_metrics_aggregates_in_one_response() {
+        let store = InMemoryTicketStore::default();
+        let ticket = store
+            .create_ticket(
+                "Metrics".to_string(),
+                "body".to_string(),
+                tea_core::TicketSource::Human,
+                tea_core::ActorRef::human("vmjcv"),
+            )
+            .await
+            .unwrap();
+        store
+            .add_comment(
+                &ticket.id,
+                tea_core::ActorRef::human("vmjcv"),
+                "note".to_string(),
+            )
+            .await
+            .unwrap();
+
+        let app = router(AppState::new(
+            store.clone(),
+            tea_brain::TemplateBrainProvider,
+            tea_loom::MockLoomClient,
+            AuthConfig::new("dev-token".to_string()),
+        ));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/tickets/metrics")
+                    .header("authorization", "Bearer dev-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        let entries = body.as_array().expect("metrics is an array");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["ticket_id"], json!(ticket.id));
+        assert_eq!(entries[0]["comments_count"], 1);
+        assert_eq!(entries[0]["runs_count"], 0);
+        assert_eq!(entries[0]["latest_comment"]["body"], "note");
     }
 
     #[tokio::test]

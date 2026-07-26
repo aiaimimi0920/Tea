@@ -69,6 +69,18 @@ pub enum StoreBackend {
     Sqlite,
 }
 
+/// Aggregated per-ticket counts and latest activity, computed server-side so the
+/// UI can render its issue list without fetching every ticket's comments/events/runs
+/// individually (avoids a 3N request fan-out on each poll).
+#[derive(Debug, Clone, Serialize)]
+pub struct TicketMetrics {
+    pub ticket_id: TicketId,
+    pub comments_count: usize,
+    pub runs_count: usize,
+    pub latest_comment: Option<TicketComment>,
+    pub latest_event: Option<TicketEvent>,
+}
+
 #[async_trait]
 pub trait TicketStore: Send + Sync {
     async fn store_status(&self) -> Result<StoreStatus, StoreError>;
@@ -120,6 +132,8 @@ pub trait TicketStore: Send + Sync {
     ) -> Result<Ticket, StoreError>;
 
     async fn list_tickets(&self) -> Result<Vec<Ticket>, StoreError>;
+    /// Per-ticket aggregated metrics for every ticket, in `list_tickets` order.
+    async fn ticket_metrics(&self) -> Result<Vec<TicketMetrics>, StoreError>;
     async fn get_ticket(&self, id: &TicketId) -> Result<Ticket, StoreError>;
     async fn ticket_events(&self, id: &TicketId) -> Result<Vec<TicketEvent>, StoreError>;
     async fn ticket_comments(&self, id: &TicketId) -> Result<Vec<TicketComment>, StoreError>;
@@ -319,6 +333,22 @@ impl TicketStore for InMemoryTicketStore {
             .ticket_order
             .iter()
             .filter_map(|id| inner.tickets.get(id).cloned())
+            .collect())
+    }
+
+    async fn ticket_metrics(&self) -> Result<Vec<TicketMetrics>, StoreError> {
+        let inner = self.inner.lock().map_err(|_| StoreError::LockPoisoned)?;
+        Ok(inner
+            .ticket_order
+            .iter()
+            .filter(|id| inner.tickets.contains_key(id))
+            .map(|id| TicketMetrics {
+                ticket_id: id.clone(),
+                comments_count: inner.comments.get(id).map_or(0, Vec::len),
+                runs_count: inner.runs_by_ticket.get(id).map_or(0, Vec::len),
+                latest_comment: inner.comments.get(id).and_then(|c| c.last().cloned()),
+                latest_event: inner.events.get(id).and_then(|e| e.last().cloned()),
+            })
             .collect())
     }
 
@@ -791,6 +821,36 @@ impl TicketStore for SqliteTicketStore {
         decode_rows(rows)
     }
 
+    async fn ticket_metrics(&self) -> Result<Vec<TicketMetrics>, StoreError> {
+        let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
+        // A constant number of aggregate queries (not one-per-ticket): counts via
+        // GROUP BY and the latest comment/event via MAX(ordinal), all backed by the
+        // ticket_ordinal indexes.
+        let tickets: Vec<Ticket> = {
+            let mut statement =
+                conn.prepare_cached("SELECT json FROM tickets ORDER BY ordinal ASC")?;
+            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+            decode_rows(rows)?
+        };
+        let comment_counts = count_by_ticket(&conn, "comments")?;
+        let run_counts = count_by_ticket(&conn, "runs")?;
+        let latest_comments: BTreeMap<String, TicketComment> = latest_by_ticket(&conn, "comments")?;
+        let latest_events: BTreeMap<String, TicketEvent> = latest_by_ticket(&conn, "events")?;
+        Ok(tickets
+            .into_iter()
+            .map(|ticket| {
+                let key = ticket.id.to_string();
+                TicketMetrics {
+                    comments_count: comment_counts.get(&key).copied().unwrap_or(0),
+                    runs_count: run_counts.get(&key).copied().unwrap_or(0),
+                    latest_comment: latest_comments.get(&key).cloned(),
+                    latest_event: latest_events.get(&key).cloned(),
+                    ticket_id: ticket.id,
+                }
+            })
+            .collect())
+    }
+
     async fn get_ticket(&self, id: &TicketId) -> Result<Ticket, StoreError> {
         let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
         get_sqlite_ticket(&conn, id)
@@ -1235,6 +1295,13 @@ impl TicketStore for RuntimeTicketStore {
         }
     }
 
+    async fn ticket_metrics(&self) -> Result<Vec<TicketMetrics>, StoreError> {
+        match self {
+            Self::Memory(store) => store.ticket_metrics().await,
+            Self::Sqlite(store) => store.ticket_metrics().await,
+        }
+    }
+
     async fn get_ticket(&self, id: &TicketId) -> Result<Ticket, StoreError> {
         match self {
             Self::Memory(store) => store.get_ticket(id).await,
@@ -1599,6 +1666,56 @@ fn decode_rows<T: serde::de::DeserializeOwned>(
     Ok(values)
 }
 
+/// Count child rows per ticket in one GROUP BY query (keyed by ticket id string).
+fn count_by_ticket(conn: &Connection, table: &str) -> Result<BTreeMap<String, usize>, StoreError> {
+    let sql = match table {
+        "comments" => "SELECT ticket_id, COUNT(*) FROM comments GROUP BY ticket_id",
+        "runs" => "SELECT ticket_id, COUNT(*) FROM runs GROUP BY ticket_id",
+        _ => unreachable!("unknown count table"),
+    };
+    let mut statement = conn.prepare_cached(sql)?;
+    let rows = statement.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    })?;
+    let mut map = BTreeMap::new();
+    for row in rows {
+        let (ticket_id, count) = row?;
+        map.insert(ticket_id, count.max(0) as usize);
+    }
+    Ok(map)
+}
+
+/// Fetch the single latest (max-ordinal) child row per ticket in one query and
+/// decode it, keyed by ticket id string.
+fn latest_by_ticket<T: serde::de::DeserializeOwned>(
+    conn: &Connection,
+    table: &str,
+) -> Result<BTreeMap<String, T>, StoreError> {
+    let sql = match table {
+        "comments" => {
+            "SELECT c.ticket_id, c.json FROM comments c \
+             JOIN (SELECT ticket_id, MAX(ordinal) AS mo FROM comments GROUP BY ticket_id) m \
+             ON c.ticket_id = m.ticket_id AND c.ordinal = m.mo"
+        }
+        "events" => {
+            "SELECT e.ticket_id, e.json FROM events e \
+             JOIN (SELECT ticket_id, MAX(ordinal) AS mo FROM events GROUP BY ticket_id) m \
+             ON e.ticket_id = m.ticket_id AND e.ordinal = m.mo"
+        }
+        _ => unreachable!("unknown latest table"),
+    };
+    let mut statement = conn.prepare_cached(sql)?;
+    let rows = statement.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut map = BTreeMap::new();
+    for row in rows {
+        let (ticket_id, json) = row?;
+        map.insert(ticket_id, decode(json)?);
+    }
+    Ok(map)
+}
+
 fn insert_ticket(conn: &Connection, ticket: &Ticket) -> Result<(), StoreError> {
     let ordinal = next_global_ordinal(conn, "tickets")?;
     conn.execute(
@@ -1845,6 +1962,69 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["A", "B"]
         );
+    }
+
+    async fn assert_ticket_metrics_scenario(store: &impl TicketStore) {
+        let a = store
+            .create_ticket(
+                "A".to_string(),
+                "first".to_string(),
+                TicketSource::Human,
+                ActorRef::human("vmjcv"),
+            )
+            .await
+            .unwrap();
+        let b = store
+            .create_ticket(
+                "B".to_string(),
+                "second".to_string(),
+                TicketSource::Human,
+                ActorRef::human("vmjcv"),
+            )
+            .await
+            .unwrap();
+        store
+            .add_comment(&a.id, ActorRef::human("vmjcv"), "hello".to_string())
+            .await
+            .unwrap();
+        store
+            .add_comment(&a.id, ActorRef::human("vmjcv"), "world".to_string())
+            .await
+            .unwrap();
+        store
+            .add_run(&a.id, ActorRef::system(), successful_run(&a.id))
+            .await
+            .unwrap();
+
+        let metrics = store.ticket_metrics().await.unwrap();
+        assert_eq!(metrics.len(), 2);
+
+        // Metrics follow list_tickets order (A, then B).
+        let first = &metrics[0];
+        assert_eq!(first.ticket_id, a.id);
+        assert_eq!(first.comments_count, 2);
+        assert_eq!(first.runs_count, 1);
+        assert_eq!(first.latest_comment.as_ref().unwrap().body, "world");
+        assert!(first.latest_event.is_some());
+
+        let second = &metrics[1];
+        assert_eq!(second.ticket_id, b.id);
+        assert_eq!(second.comments_count, 0);
+        assert_eq!(second.runs_count, 0);
+        assert!(second.latest_comment.is_none());
+    }
+
+    #[tokio::test]
+    async fn ticket_metrics_aggregates_counts_and_latest_in_memory() {
+        let store = InMemoryTicketStore::default();
+        assert_ticket_metrics_scenario(&store).await;
+    }
+
+    #[tokio::test]
+    async fn sqlite_ticket_metrics_aggregates_counts_and_latest() {
+        let path = temp_store_path("tea-store-sqlite-ticket-metrics");
+        let store = SqliteTicketStore::open(&path).unwrap();
+        assert_ticket_metrics_scenario(&store).await;
     }
 
     #[tokio::test]

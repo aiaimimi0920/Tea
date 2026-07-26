@@ -357,3 +357,19 @@ export async function exportTicket(
     options,
   );
 }
+
+export interface TeaIssueMetric {
+  ticket_id: string;
+  comments_count: number;
+  runs_count: number;
+  latest_comment: TeaComment | null;
+  latest_event: TeaEvent | null;
+}
+
+/**
+ * Aggregated per-ticket metrics for the whole list in a single request.
+ * Replaces the previous per-ticket fan-out (comments+runs+events for every ticket).
+ */
+export async function getIssueMetrics(options?: TeaClientOptions): Promise<TeaIssueMetric[]> {
+  return requestJson<TeaIssueMetric[]>("GET", "/v1/tickets/metrics", undefined, options);
+}
