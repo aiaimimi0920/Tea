@@ -1172,15 +1172,38 @@ export default function App() {
   const issuePresetQueueCount = (queue: IssuePresetQueue) =>
     tickets.filter((ticket) => ticketMatchesPresetQueue(ticket, queue)).length;
 
-  const filteredTickets = tickets.filter((ticket) => {
-    if (!ticketMatchesBaseIssueFilters(ticket)) return false;
-    return (
-      ticketMatchesSignalFilter(ticket) &&
-      ticketMatchesPriorityFilter(ticket) &&
-      ticketMatchesRiskFilter(ticket) &&
-      ticketMatchesWatchFilter(ticket)
-    );
-  });
+  // Memoized so the downstream sortedTickets/visibleTickets memos are actually
+  // effective (they depend on filteredTickets; an inline array rebuilt every render
+  // defeated them). Deps list every piece of state the filter predicates read — the
+  // predicate closures themselves are intentionally omitted (they are recreated each
+  // render, which would defeat the memo).
+  const filteredTickets = useMemo(
+    () =>
+      tickets.filter((ticket) => {
+        if (!ticketMatchesBaseIssueFilters(ticket)) return false;
+        return (
+          ticketMatchesSignalFilter(ticket) &&
+          ticketMatchesPriorityFilter(ticket) &&
+          ticketMatchesRiskFilter(ticket) &&
+          ticketMatchesWatchFilter(ticket)
+        );
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      tickets,
+      issueFilter,
+      authorFilter,
+      selectedLabelFilter,
+      localNotes,
+      searchQuery,
+      issueSignalFilter,
+      issueMetrics,
+      issuePriorityFilter,
+      issueRiskFilter,
+      issueWatchFilter,
+      watchStates,
+    ],
+  );
   const sortedTickets = useMemo(() => {
     const list = [...filteredTickets];
     const valueForMetrics = (ticketId: string) => {
