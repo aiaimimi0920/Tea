@@ -10,7 +10,8 @@
     "preview": "rsbuild preview",
     "tauri": "tauri",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "lint": "eslint src"
+    "lint": "eslint src",
+    "test": "vitest run"
   },
   "dependencies": {
     "@tauri-apps/api": "2.11.0",
@@ -26,7 +27,9 @@
     "@types/react-dom": "^19.0.0",
     "eslint": "^10.8.0",
     "eslint-plugin-react-hooks": "^7.1.1",
+    "playwright-core": "1.59.1",
     "typescript": "^5.0.0",
-    "typescript-eslint": "^8.65.0"
+    "typescript-eslint": "^8.65.0",
+    "vitest": "4.1.10"
   }
 }

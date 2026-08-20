@@ -1,15 +1,18 @@
-target/
+.git/
+.github/
 .runtime/
 .tmp/
+_temp/
+temp/
+tmp/
 
+**/target/
+**/node_modules/
+**/dist/
 *.log
-tmp-*
 
-.env
-.env.*
-!.env.example
-
-.git/
-.gitignore
-.dockerignore
-Dockerfile
+docs/
+output/
+release/
+resources/
+scripts/

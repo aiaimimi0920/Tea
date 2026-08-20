@@ -239,6 +239,36 @@ pub enum RunStatus {
     Retrying,
 }
 
+impl RunStatus {
+    pub fn can_stop(self) -> bool {
+        matches!(self, Self::Queued | Self::Running | Self::Retrying)
+    }
+
+    pub fn can_retry(self) -> bool {
+        matches!(self, Self::Failed | Self::Stopped)
+    }
+
+    pub fn can_transition_to(self, next: Self) -> bool {
+        if self == next {
+            return true;
+        }
+
+        match self {
+            Self::Queued => matches!(
+                next,
+                Self::Running | Self::Succeeded | Self::Failed | Self::Stopped
+            ),
+            Self::Running => matches!(next, Self::Succeeded | Self::Failed | Self::Stopped),
+            Self::Failed | Self::Stopped => next == Self::Retrying,
+            Self::Retrying => matches!(
+                next,
+                Self::Running | Self::Succeeded | Self::Failed | Self::Stopped
+            ),
+            Self::Succeeded => false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Ticket {
     pub id: TicketId,
@@ -504,6 +534,8 @@ pub enum TicketEventKind {
     RunEventReceived,
     RunFailed,
     RunSucceeded,
+    RunStopped,
+    RunRetrying,
     EvidenceAttached,
     ReviewRequested,
     HumanAccepted,
@@ -589,6 +621,24 @@ pub struct RunEvidence {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn run_status_action_guards_and_transition_graph_are_explicit() {
+        assert!(RunStatus::Running.can_stop());
+        assert!(RunStatus::Retrying.can_stop());
+        assert!(!RunStatus::Succeeded.can_stop());
+        assert!(RunStatus::Stopped.can_retry());
+        assert!(RunStatus::Failed.can_retry());
+        assert!(!RunStatus::Running.can_retry());
+
+        assert!(RunStatus::Queued.can_transition_to(RunStatus::Succeeded));
+        assert!(RunStatus::Running.can_transition_to(RunStatus::Stopped));
+        assert!(RunStatus::Stopped.can_transition_to(RunStatus::Retrying));
+        assert!(RunStatus::Retrying.can_transition_to(RunStatus::Succeeded));
+        assert!(RunStatus::Succeeded.can_transition_to(RunStatus::Succeeded));
+        assert!(!RunStatus::Succeeded.can_transition_to(RunStatus::Stopped));
+        assert!(!RunStatus::Running.can_transition_to(RunStatus::Retrying));
+    }
 
     #[test]
     fn ticket_creation_defaults_to_open() {

@@ -10,25 +10,50 @@ permissions:
   contents: read
 
 jobs:
+  test-linux-startup-lock:
+    name: Test portable startup lock on Linux
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@a5f673d0ba8626c3977bb416a1612774bc82181b # 1.95.0
+
+      - name: Test startup lock
+        run: cargo test --locked -p tea_startup_lock
+
+      - name: Audit Rust dependency locks
+        run: |
+          cargo install cargo-audit --locked --version 0.22.2
+          cargo audit
+          cargo audit --file apps/desktop/src-tauri/Cargo.lock
+
   build-windows-release:
+    needs: test-linux-startup-lock
     runs-on: windows-latest
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: "22"
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@1.95.0
+        uses: dtolnay/rust-toolchain@a5f673d0ba8626c3977bb416a1612774bc82181b # 1.95.0
         with:
-          components: rustfmt
+          components: rustfmt, clippy
 
       - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: |
             .
@@ -48,25 +73,62 @@ jobs:
         working-directory: apps/desktop
         run: npm run lint
 
+      - name: Desktop unit tests
+        working-directory: apps/desktop
+        run: npm test
+
+      - name: Desktop dependency audit
+        working-directory: apps/desktop
+        run: npm audit --audit-level=high
+
       - name: Rust format check
         run: cargo fmt --check --all
 
       - name: Desktop Tauri Rust format check
         run: cargo fmt --check --manifest-path apps/desktop/src-tauri/Cargo.toml
 
+      - name: Rust Clippy
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+
+      - name: Desktop Tauri Rust Clippy
+        run: cargo clippy --locked --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- -D warnings
+
       - name: Rust tests
         run: cargo test --locked --workspace
 
       - name: Desktop Tauri Rust tests
-        run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
+        run: cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml
+
+      - name: Launcher process contract
+        shell: powershell
+        run: |
+          cargo build --locked -p tea-daemon
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-tea-launcher-contract.ps1 -DaemonExe .\target\debug\tea-daemon.exe
+
+      - name: Release reparse-point containment contract
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-tea-release-reparse-contract.ps1
 
       - name: Build portable Tea release package
         shell: powershell
         run: |
-          powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-local-tea-release.ps1 -OutputDir "release\Tea" -VersionId "ci-${{ github.run_number }}-${{ github.sha }}" -Force -AllowDirtyManifest
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-local-tea-release.ps1 -OutputDir "release\Tea" -VersionId "ci-${{ github.run_number }}-${{ github.sha }}" -Force
+
+      - name: Verify portable Tea release package
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-tea-release-package.ps1 -PackageDir "release\Tea\ci-${{ github.run_number }}-${{ github.sha }}" -RunSmoke
+
+      - name: Release manifest and asset contracts
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-tea-release-manifest-contract.ps1
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-tea-release-asset-copy-contract.ps1 -PackageDir "release\Tea\ci-${{ github.run_number }}-${{ github.sha }}"
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-tea-release-asset-reparse-contract.ps1 -PackageDir "release\Tea\ci-${{ github.run_number }}-${{ github.sha }}"
 
       - name: Upload portable Tea release package
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: tea-portable-windows-x64
           path: release/Tea/ci-${{ github.run_number }}-${{ github.sha }}

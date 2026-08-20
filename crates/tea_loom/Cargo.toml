@@ -14,6 +14,7 @@ serde.workspace = true
 serde_json.workspace = true
 tea_config.workspace = true
 tea_core.workspace = true
+tea_http_read = { workspace = true, features = ["http"] }
 thiserror.workspace = true
 tokio.workspace = true
 

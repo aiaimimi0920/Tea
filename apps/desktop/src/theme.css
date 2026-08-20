@@ -1,0 +1,68 @@
+:root {
+  color-scheme: dark;
+
+  /* Neuro canonical colors. Product rules use semantic Tea aliases below. */
+  --neuro-signal-yellow: #d9ff38;
+  --neuro-signal-green: #22c55e;
+  --neuro-info-blue: #06b6d4;
+  --neuro-danger-red: #f43f5e;
+  --neuro-bg: #06080d;
+  --neuro-surface: #090c11;
+  --neuro-panel: #0e1218;
+  --neuro-rail: #070a0f;
+  --neuro-control: #111720;
+  --neuro-control-hover: #18222c;
+  --neuro-text: #f7f8ef;
+  --neuro-text-muted: #929a9f;
+  --neuro-line: rgba(255, 255, 255, 0.12);
+  --neuro-focus-surface: #f3f5f1;
+  --neuro-focus-ink: #20252b;
+  --neuro-focus-muted: #656b72;
+  --neuro-yellow-soft: color-mix(in srgb, var(--neuro-signal-yellow) 14%, var(--neuro-panel));
+  --neuro-yellow-line: color-mix(in srgb, var(--neuro-signal-yellow) 42%, var(--neuro-line));
+  --neuro-green-soft: color-mix(in srgb, var(--neuro-signal-green) 14%, var(--neuro-panel));
+  --neuro-green-line: color-mix(in srgb, var(--neuro-signal-green) 42%, var(--neuro-line));
+  --neuro-info-soft: color-mix(in srgb, var(--neuro-info-blue) 12%, var(--neuro-panel));
+  --neuro-info-line: color-mix(in srgb, var(--neuro-info-blue) 42%, var(--neuro-line));
+  --neuro-danger-soft: color-mix(in srgb, var(--neuro-danger-red) 12%, var(--neuro-panel));
+  --neuro-danger-line: color-mix(in srgb, var(--neuro-danger-red) 42%, var(--neuro-line));
+
+  /* Tea semantic aliases. Change this map to retheme the application. */
+  --tea-bg: var(--neuro-bg);
+  --tea-bg-deep: color-mix(in srgb, var(--neuro-bg) 82%, black);
+  --tea-surface: var(--neuro-surface);
+  --tea-panel: var(--neuro-panel);
+  --tea-rail: var(--neuro-rail);
+  --tea-control: var(--neuro-control);
+  --tea-control-hover: var(--neuro-control-hover);
+  --tea-text: var(--neuro-text);
+  --tea-text-soft: color-mix(in srgb, var(--neuro-text) 82%, var(--neuro-text-muted));
+  --tea-muted: var(--neuro-text-muted);
+  --tea-muted-low: color-mix(in srgb, var(--neuro-text-muted) 78%, var(--neuro-bg));
+  --tea-line: var(--neuro-line);
+  --tea-accent: var(--neuro-signal-yellow);
+  --tea-accent-soft: var(--neuro-yellow-soft);
+  --tea-accent-line: var(--neuro-yellow-line);
+  --tea-on-accent: var(--neuro-focus-ink);
+  --tea-focus-surface: var(--neuro-focus-surface);
+  --tea-focus-ink: var(--neuro-focus-ink);
+  --tea-focus-muted: var(--neuro-focus-muted);
+  --tea-success: var(--neuro-signal-green);
+  --tea-success-soft: var(--neuro-green-soft);
+  --tea-success-line: var(--neuro-green-line);
+  --tea-success-text: color-mix(in srgb, var(--neuro-signal-green) 76%, white);
+  --tea-info: var(--neuro-info-blue);
+  --tea-info-soft: var(--neuro-info-soft);
+  --tea-info-line: var(--neuro-info-line);
+  --tea-info-text: color-mix(in srgb, var(--neuro-info-blue) 76%, white);
+  --tea-danger: var(--neuro-danger-red);
+  --tea-danger-soft: var(--neuro-danger-soft);
+  --tea-danger-line: var(--neuro-danger-line);
+  --tea-danger-text: color-mix(in srgb, var(--neuro-danger-red) 78%, white);
+  --tea-shadow: rgba(0, 0, 0, 0.38);
+
+  color: var(--tea-text);
+  background: var(--tea-bg);
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}

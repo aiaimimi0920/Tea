@@ -10,4 +10,7 @@ description = "Tea Model Context Protocol tool catalog and request routing"
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+# No default features: this pure crate only needs the percent-encoder, not the
+# reqwest-based response readers.
+tea_http_read.workspace = true
 thiserror.workspace = true

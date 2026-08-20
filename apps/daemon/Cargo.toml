@@ -20,6 +20,7 @@ serde_json.workspace = true
 tea_brain.workspace = true
 tea_api.workspace = true
 tea_config.workspace = true
+tea_http_read = { workspace = true, features = ["http"] }
 tea_loom.workspace = true
 tea_store.workspace = true
 tokio.workspace = true

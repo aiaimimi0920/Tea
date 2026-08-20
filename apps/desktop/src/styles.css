@@ -1,22 +1,12 @@
-:root {
-  color: #dbe6f4;
-  background: #0d1117;
-  font-family:
-    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-}
-
 * {
   box-sizing: border-box;
 }
 
 body {
   margin: 0;
-  min-width: 1080px;
-  min-height: 760px;
-  background:
-    radial-gradient(circle at 12% -10%, rgba(35, 134, 54, 0.2), transparent 28rem),
-    radial-gradient(circle at 90% 0%, rgba(56, 139, 253, 0.13), transparent 32rem),
-    #0d1117;
+  min-width: 0;
+  min-height: 100vh;
+  background: var(--tea-bg);
 }
 
 button,
@@ -27,17 +17,17 @@ select {
 }
 
 button {
-  border: 1px solid #30363d;
+  border: 1px solid var(--tea-line);
   border-radius: 8px;
   padding: 0.52rem 0.78rem;
-  color: #dbe6f4;
-  background: #21262d;
+  color: var(--tea-text);
+  background: var(--tea-control);
   cursor: pointer;
 }
 
 button:hover:not(:disabled) {
-  border-color: #8b949e;
-  background: #30363d;
+  border-color: var(--tea-muted);
+  background: var(--tea-control-hover);
 }
 
 button:disabled {
@@ -49,19 +39,28 @@ input,
 textarea,
 select {
   width: 100%;
-  border: 1px solid #30363d;
+  border: 1px solid var(--tea-line);
   border-radius: 8px;
   padding: 0.64rem 0.72rem;
-  color: #dbe6f4;
-  background: #0d1117;
+  color: var(--tea-text);
+  background: var(--tea-bg);
 }
 
 input:focus,
 textarea:focus,
 select:focus {
-  border-color: #58a6ff;
-  box-shadow: 0 0 0 3px rgba(56, 139, 253, 0.18);
+  border-color: var(--tea-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--tea-accent) 42%, transparent);
   outline: none;
+}
+
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--tea-accent);
+  outline-offset: 2px;
 }
 
 textarea {
@@ -72,7 +71,7 @@ textarea {
 pre {
   overflow: auto;
   margin: 0;
-  color: #c9d1d9;
+  color: var(--tea-text-soft);
   white-space: pre-wrap;
 }
 
@@ -96,9 +95,9 @@ dl {
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
-  border-bottom: 1px solid #30363d;
+  border-bottom: 1px solid var(--tea-line);
   padding: 1.25rem 1.5rem;
-  background: rgba(13, 17, 23, 0.92);
+  background: color-mix(in srgb, var(--tea-bg) 92%, transparent);
 }
 
 .repo-identity {
@@ -107,7 +106,7 @@ dl {
 }
 
 .repo-owner {
-  color: #7d8590;
+  color: var(--tea-muted-low);
   font-size: 0.84rem;
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -115,7 +114,7 @@ dl {
 }
 
 .repo-header h1 {
-  color: #f0f6fc;
+  color: var(--tea-text);
   font-size: 1.74rem;
   letter-spacing: -0.03em;
 }
@@ -128,7 +127,7 @@ dl {
 .meta-section small,
 .empty,
 .runs-panel small {
-  color: #8b949e;
+  color: var(--tea-muted);
 }
 
 .repo-actions {
@@ -152,19 +151,19 @@ dl {
 }
 
 .auto-refresh-toggle.on {
-  border-color: rgba(46, 160, 67, 0.6);
-  color: #aff5b4;
-  background: rgba(46, 160, 67, 0.14);
+  border-color: color-mix(in srgb, var(--tea-success) 60%, transparent);
+  color: var(--tea-success-text);
+  background: color-mix(in srgb, var(--tea-success) 14%, transparent);
 }
 
 .auto-refresh-toggle.off {
-  border-color: rgba(139, 148, 158, 0.4);
-  color: #8b949e;
-  background: rgba(139, 148, 158, 0.08);
+  border-color: color-mix(in srgb, var(--tea-muted) 40%, transparent);
+  color: var(--tea-muted);
+  background: color-mix(in srgb, var(--tea-muted) 8%, transparent);
 }
 
 .refresh-status {
-  color: #6e7681;
+  color: var(--tea-muted-low);
   font-size: 0.74rem;
   white-space: nowrap;
 }
@@ -176,27 +175,27 @@ dl {
 
 .link-button {
   border: 0;
-  color: #58a6ff;
+  color: var(--tea-info);
 }
 
 .new-issue-button {
-  border-color: rgba(46, 160, 67, 0.8);
-  color: #ffffff;
+  border-color: var(--tea-accent);
+  color: var(--tea-on-accent);
   font-weight: 700;
-  background: #238636;
+  background: var(--tea-accent);
 }
 
 .new-issue-button:hover:not(:disabled) {
-  border-color: #3fb950;
-  background: #2ea043;
+  border-color: var(--tea-accent);
+  background: color-mix(in srgb, var(--tea-accent) 86%, white);
 }
 
 .repo-tabs {
   display: flex;
   gap: 0.25rem;
-  border-bottom: 1px solid #30363d;
+  border-bottom: 1px solid var(--tea-line);
   padding: 0 1.5rem;
-  background: #0d1117;
+  background: var(--tea-bg);
 }
 
 .repo-tabs button {
@@ -207,26 +206,26 @@ dl {
   border-bottom: 2px solid transparent;
   border-radius: 0;
   padding: 0.78rem 0.9rem;
-  color: #8b949e;
+  color: var(--tea-muted);
   background: transparent;
 }
 
 .repo-tabs button.active,
 .repo-tabs button[aria-selected="true"] {
-  border-bottom-color: #f78166;
-  color: #f0f6fc;
+  border-bottom-color: var(--tea-accent);
+  color: var(--tea-text);
   font-weight: 700;
 }
 
 .repo-tabs span {
   min-width: 1.35rem;
-  border: 1px solid #30363d;
+  border: 1px solid var(--tea-line);
   border-radius: 999px;
   padding: 0.02rem 0.38rem;
-  color: #c9d1d9;
+  color: var(--tea-text-soft);
   font-size: 0.74rem;
   text-align: center;
-  background: #21262d;
+  background: var(--tea-control);
 }
 
 .connection-strip {
@@ -234,9 +233,9 @@ dl {
   grid-template-columns: minmax(260px, 0.7fr) minmax(280px, 1fr) minmax(280px, 1fr);
   gap: 1rem;
   align-items: end;
-  border-bottom: 1px solid #30363d;
+  border-bottom: 1px solid var(--tea-line);
   padding: 0.85rem 1.5rem;
-  background: rgba(22, 27, 34, 0.82);
+  background: color-mix(in srgb, var(--tea-surface) 82%, transparent);
 }
 
 .connection-strip label {
@@ -256,19 +255,19 @@ dl {
   width: 10px;
   height: 10px;
   border-radius: 999px;
-  background: #d29922;
-  box-shadow: 0 0 0 4px rgba(210, 153, 34, 0.14);
+  background: var(--tea-accent);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--tea-accent) 14%, transparent);
 }
 
 .state-dot.ok {
-  background: #3fb950;
-  box-shadow: 0 0 0 4px rgba(63, 185, 80, 0.14);
+  background: var(--tea-success);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--tea-success) 14%, transparent);
 }
 
 .activity-log {
-  border-bottom: 1px solid #30363d;
+  border-bottom: 1px solid var(--tea-line);
   padding: 0.5rem 1.5rem;
-  background: rgba(13, 17, 23, 0.6);
+  background: color-mix(in srgb, var(--tea-bg) 60%, transparent);
 }
 
 .activity-log-summary {
@@ -276,7 +275,7 @@ dl {
   align-items: center;
   gap: 0.55rem;
   cursor: pointer;
-  color: #c9d1d9;
+  color: var(--tea-text-soft);
   font-size: 0.82rem;
   font-weight: 600;
   list-style: none;
@@ -293,20 +292,25 @@ dl {
   min-width: 1.4rem;
   padding: 0 0.4rem;
   border-radius: 999px;
-  background: rgba(139, 148, 158, 0.18);
-  color: #8b949e;
+  background: color-mix(in srgb, var(--tea-muted) 18%, transparent);
+  color: var(--tea-muted);
   font-size: 0.72rem;
 }
 
+.activity-log-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 0.45rem;
+}
+
 .activity-log-clear {
-  margin-left: auto;
   padding: 0.25rem 0.55rem;
   font-size: 0.74rem;
 }
 
 .activity-log-empty {
   margin: 0.5rem 0 0.25rem;
-  color: #6e7681;
+  color: var(--tea-muted-low);
   font-size: 0.78rem;
 }
 
@@ -324,32 +328,32 @@ dl {
   display: flex;
   gap: 0.6rem;
   padding: 0.32rem 0.5rem;
-  border-left: 3px solid #30363d;
+  border-left: 3px solid var(--tea-line);
   border-radius: 4px;
-  background: rgba(22, 27, 34, 0.55);
+  background: color-mix(in srgb, var(--tea-surface) 55%, transparent);
   font-size: 0.8rem;
 }
 
 .activity-log-entry.tone-success {
-  border-left-color: rgba(63, 185, 80, 0.8);
+  border-left-color: color-mix(in srgb, var(--tea-success) 80%, transparent);
 }
 
 .activity-log-entry.tone-error {
-  border-left-color: rgba(248, 81, 73, 0.8);
+  border-left-color: color-mix(in srgb, var(--tea-danger) 80%, transparent);
 }
 
 .activity-log-entry.tone-info {
-  border-left-color: rgba(88, 166, 255, 0.7);
+  border-left-color: color-mix(in srgb, var(--tea-info) 70%, transparent);
 }
 
 .activity-log-time {
-  color: #6e7681;
+  color: var(--tea-muted-low);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
 .activity-log-message {
-  color: #c9d1d9;
+  color: var(--tea-text-soft);
   word-break: break-word;
 }
 
@@ -363,32 +367,32 @@ dl {
   display: grid;
   grid-template-rows: auto auto 1fr;
   min-height: 0;
-  border-right: 1px solid #30363d;
-  background: rgba(13, 17, 23, 0.82);
+  border-right: 1px solid var(--tea-line);
+  background: color-mix(in srgb, var(--tea-bg) 82%, transparent);
 }
 
 .issue-toolbar {
   display: grid;
   gap: 0.8rem;
-  border-bottom: 1px solid #30363d;
+  border-bottom: 1px solid var(--tea-line);
   padding: 1rem;
-  background: #161b22;
+  background: var(--tea-surface);
 }
 
 .issue-filter-tabs {
   display: flex;
   gap: 0;
   overflow: hidden;
-  border: 1px solid #30363d;
+  border: 1px solid var(--tea-line);
   border-radius: 8px;
 }
 
 .issue-filter-tabs button {
   flex: 1;
   border: 0;
-  border-right: 1px solid #30363d;
+  border-right: 1px solid var(--tea-line);
   border-radius: 0;
-  background: #0d1117;
+  background: var(--tea-bg);
 }
 
 .issue-filter-tabs button:last-child {
@@ -397,13 +401,14 @@ dl {
 
 .issue-filter-tabs button.active,
 .issue-filter-tabs button[aria-selected="true"] {
-  color: #f0f6fc;
-  background: #30363d;
+  border-bottom: 2px solid var(--tea-accent);
+  color: var(--tea-text);
+  background: var(--tea-accent-soft);
 }
 
 .issue-filter-tabs span {
   margin-left: 0.28rem;
-  color: #8b949e;
+  color: var(--tea-muted);
 }
 
 .issue-preset-queue-lane {
@@ -416,21 +421,21 @@ dl {
   display: grid;
   gap: 0.25rem;
   justify-items: start;
-  border-color: rgba(139, 148, 158, 0.24);
+  border-color: color-mix(in srgb, var(--tea-muted) 24%, transparent);
   padding: 0.62rem 0.7rem;
   text-align: left;
-  background: rgba(13, 17, 23, 0.84);
+  background: color-mix(in srgb, var(--tea-bg) 84%, transparent);
 }
 
 .issue-preset-queue-card:hover:not(:disabled) {
-  border-color: rgba(88, 166, 255, 0.48);
-  background: rgba(56, 139, 253, 0.1);
+  border-color: color-mix(in srgb, var(--tea-info) 48%, transparent);
+  background: color-mix(in srgb, var(--tea-info) 10%, transparent);
 }
 
 .issue-preset-queue-card[aria-pressed="true"] {
-  border-color: rgba(88, 166, 255, 0.7);
-  background: linear-gradient(180deg, rgba(56, 139, 253, 0.18), rgba(13, 17, 23, 0.88));
-  box-shadow: inset 3px 0 0 #58a6ff;
+  border-color: color-mix(in srgb, var(--tea-info) 70%, transparent);
+  background: var(--tea-info-soft);
+  box-shadow: inset 3px 0 0 var(--tea-info);
 }
 
 .issue-preset-queue-card > span {
@@ -441,14 +446,14 @@ dl {
 }
 
 .issue-preset-queue-card strong {
-  color: #f0f6fc;
+  color: var(--tea-text);
   font-size: 1rem;
   line-height: 1;
 }
 
 .issue-preset-queue-card span span {
   overflow: hidden;
-  color: #c9d1d9;
+  color: var(--tea-text-soft);
   font-size: 0.78rem;
   font-weight: 800;
   text-overflow: ellipsis;
@@ -458,7 +463,7 @@ dl {
 .issue-preset-queue-card small {
   overflow: hidden;
   max-width: 100%;
-  color: #8b949e;
+  color: var(--tea-muted);
   font-size: 0.7rem;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -469,12 +474,10 @@ dl {
   grid-template-columns: minmax(13rem, 0.9fr) minmax(0, 1.7fr);
   gap: 0.8rem;
   align-items: stretch;
-  border: 1px solid rgba(88, 166, 255, 0.24);
+  border: 1px solid color-mix(in srgb, var(--tea-info) 24%, transparent);
   border-radius: 10px;
   padding: 0.78rem;
-  background:
-    radial-gradient(circle at top left, rgba(56, 139, 253, 0.18), transparent 34%),
-    rgba(13, 17, 23, 0.72);
+  background: var(--tea-panel);
 }
 
 .issue-queue-summary-card > div:first-child {
@@ -484,19 +487,19 @@ dl {
 
 .issue-queue-summary-card span,
 .issue-queue-summary-card small {
-  color: #8b949e;
+  color: var(--tea-muted);
   font-size: 0.72rem;
 }
 
 .issue-queue-summary-card strong {
-  color: #f0f6fc;
+  color: var(--tea-text);
   font-size: 0.9rem;
 }
 
 .issue-view-preference-status {
   display: inline-flex;
   width: max-content;
-  border: 1px solid rgba(139, 148, 158, 0.24);
+  border: 1px solid color-mix(in srgb, var(--tea-muted) 24%, transparent);
   border-radius: 999px;
   padding: 0.14rem 0.5rem;
   font-size: 0.68rem;
@@ -504,15 +507,15 @@ dl {
 }
 
 .issue-view-preference-status.default {
-  border-color: rgba(63, 185, 80, 0.36);
-  color: #aff5b4;
-  background: rgba(46, 160, 67, 0.1);
+  border-color: color-mix(in srgb, var(--tea-success) 36%, transparent);
+  color: var(--tea-success-text);
+  background: color-mix(in srgb, var(--tea-success) 10%, transparent);
 }
 
 .issue-view-preference-status.saved {
-  border-color: rgba(88, 166, 255, 0.38);
-  color: #a5d6ff;
-  background: rgba(56, 139, 253, 0.12);
+  border-color: color-mix(in srgb, var(--tea-info) 38%, transparent);
+  color: var(--tea-info-text);
+  background: color-mix(in srgb, var(--tea-info) 12%, transparent);
 }
 
 .issue-queue-summary-grid {
@@ -524,10 +527,10 @@ dl {
 .issue-queue-summary-grid span {
   display: grid;
   gap: 0.18rem;
-  border: 1px solid rgba(139, 148, 158, 0.18);
+  border: 1px solid color-mix(in srgb, var(--tea-muted) 18%, transparent);
   border-radius: 8px;
   padding: 0.48rem 0.55rem;
-  background: rgba(22, 27, 34, 0.58);
+  background: color-mix(in srgb, var(--tea-surface) 58%, transparent);
 }
 
 .issue-queue-summary-actions {
@@ -538,12 +541,12 @@ dl {
 }
 
 .issue-queue-summary-actions button {
-  border-color: rgba(139, 148, 158, 0.28);
+  border-color: color-mix(in srgb, var(--tea-muted) 28%, transparent);
   padding: 0.38rem 0.62rem;
-  color: #c9d1d9;
+  color: var(--tea-text-soft);
   font-size: 0.76rem;
   font-weight: 800;
-  background: rgba(22, 27, 34, 0.72);
+  background: color-mix(in srgb, var(--tea-surface) 72%, transparent);
 }
 
 .issue-query-bar {
@@ -571,7 +574,7 @@ dl {
   grid-template-columns: auto minmax(0, 1fr);
   gap: 0.45rem;
   align-items: center;
-  color: #8b949e;
+  color: var(--tea-muted);
   font-size: 0.82rem;
 }
 
@@ -594,49 +597,49 @@ dl {
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
-  border-color: rgba(139, 148, 158, 0.28);
+  border-color: color-mix(in srgb, var(--tea-muted) 28%, transparent);
   border-radius: 999px;
   padding: 0.34rem 0.62rem;
-  color: #c9d1d9;
+  color: var(--tea-text-soft);
   font-size: 0.78rem;
-  background: rgba(13, 17, 23, 0.88);
+  background: color-mix(in srgb, var(--tea-bg) 88%, transparent);
 }
 
 .issue-signal-filter-pill strong {
   min-width: 1.4rem;
-  border: 1px solid rgba(139, 148, 158, 0.22);
+  border: 1px solid color-mix(in srgb, var(--tea-muted) 22%, transparent);
   border-radius: 999px;
   padding: 0.04rem 0.38rem;
-  color: #f0f6fc;
+  color: var(--tea-text);
   font-size: 0.7rem;
   text-align: center;
-  background: rgba(139, 148, 158, 0.1);
+  background: color-mix(in srgb, var(--tea-muted) 10%, transparent);
 }
 
 .issue-signal-filter-pill[aria-pressed="true"] {
-  border-color: rgba(88, 166, 255, 0.65);
-  color: #f0f6fc;
-  background: rgba(56, 139, 253, 0.16);
+  border-color: color-mix(in srgb, var(--tea-info) 65%, transparent);
+  color: var(--tea-text);
+  background: color-mix(in srgb, var(--tea-info) 16%, transparent);
 }
 
 .issue-signal-filter-pill.tone-review {
-  border-color: rgba(248, 81, 73, 0.4);
+  border-color: color-mix(in srgb, var(--tea-danger) 40%, transparent);
 }
 
 .issue-signal-filter-pill.tone-active {
-  border-color: rgba(46, 160, 67, 0.38);
+  border-color: color-mix(in srgb, var(--tea-success) 38%, transparent);
 }
 
 .issue-signal-filter-pill.tone-stale {
-  border-color: rgba(210, 153, 34, 0.4);
+  border-color: color-mix(in srgb, var(--tea-accent) 40%, transparent);
 }
 
 .issue-signal-filter-pill.tone-success {
-  border-color: rgba(63, 185, 80, 0.38);
+  border-color: color-mix(in srgb, var(--tea-success) 38%, transparent);
 }
 
 .issue-signal-filter-pill.tone-muted {
-  border-color: rgba(139, 148, 158, 0.24);
+  border-color: color-mix(in srgb, var(--tea-muted) 24%, transparent);
 }
 
 .issue-triage-filter-lane {
@@ -654,39 +657,39 @@ dl {
   min-width: 10.5rem;
   border-radius: 999px;
   padding: 0.38rem 0.68rem;
-  color: #c9d1d9;
+  color: var(--tea-text-soft);
   font-size: 0.78rem;
   font-weight: 800;
-  background: rgba(13, 17, 23, 0.88);
+  background: color-mix(in srgb, var(--tea-bg) 88%, transparent);
 }
 
 .issue-triage-filter-button strong {
   min-width: 1.45rem;
-  border: 1px solid rgba(139, 148, 158, 0.22);
+  border: 1px solid color-mix(in srgb, var(--tea-muted) 22%, transparent);
   border-radius: 999px;
   padding: 0.04rem 0.38rem;
-  color: #f0f6fc;
+  color: var(--tea-text);
   font-size: 0.7rem;
   text-align: center;
-  background: rgba(139, 148, 158, 0.1);
+  background: color-mix(in srgb, var(--tea-muted) 10%, transparent);
 }
 
 .issue-triage-filter-button.priority {
-  border-color: rgba(248, 81, 73, 0.4);
+  border-color: color-mix(in srgb, var(--tea-danger) 40%, transparent);
 }
 
 .issue-triage-filter-button.risk {
-  border-color: rgba(210, 153, 34, 0.42);
+  border-color: color-mix(in srgb, var(--tea-accent) 42%, transparent);
 }
 
 .issue-triage-filter-button.watch {
-  border-color: rgba(88, 166, 255, 0.36);
+  border-color: color-mix(in srgb, var(--tea-info) 36%, transparent);
 }
 
 .issue-triage-filter-button[aria-pressed="true"] {
-  border-color: rgba(248, 81, 73, 0.7);
-  color: #ffa198;
-  background: rgba(248, 81, 73, 0.14);
+  border-color: color-mix(in srgb, var(--tea-danger) 70%, transparent);
+  color: var(--tea-danger-text);
+  background: color-mix(in srgb, var(--tea-danger) 14%, transparent);
 }
 
 .active-filter-chip-row {
@@ -697,9 +700,8 @@ dl {
   min-height: 2rem;
 }
 
-.active-filter-chip-label,
-.active-filter-empty {
-  color: #8b949e;
+.active-filter-chip-label {
+  color: var(--tea-muted);
   font-size: 0.8rem;
 }
 
@@ -707,34 +709,34 @@ dl {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
-  border-color: rgba(88, 166, 255, 0.28);
+  border-color: color-mix(in srgb, var(--tea-info) 28%, transparent);
   border-radius: 999px;
   padding: 0.28rem 0.55rem;
-  color: #c9d1d9;
+  color: var(--tea-text-soft);
   font-size: 0.76rem;
-  background: rgba(56, 139, 253, 0.09);
+  background: color-mix(in srgb, var(--tea-info) 9%, transparent);
 }
 
 .active-filter-chip strong {
-  color: #f0f6fc;
+  color: var(--tea-text);
   font-weight: 800;
 }
 
 .active-filter-chip:hover:not(:disabled) {
-  border-color: rgba(88, 166, 255, 0.62);
-  background: rgba(56, 139, 253, 0.16);
+  border-color: color-mix(in srgb, var(--tea-info) 62%, transparent);
+  background: color-mix(in srgb, var(--tea-info) 16%, transparent);
 }
 
 .clear-filter-link {
   border: 0;
   padding: 0.18rem 0.3rem;
-  color: #79c0ff;
+  color: var(--tea-info-text);
   font-size: 0.78rem;
   background: transparent;
 }
 
 .clear-filter-link:hover:not(:disabled) {
-  color: #a5d6ff;
+  color: var(--tea-info-text);
   text-decoration: underline;
   background: transparent;
 }
@@ -756,13 +758,13 @@ dl {
   gap: 0.6rem;
   align-items: center;
   justify-content: space-between;
-  color: #8b949e;
+  color: var(--tea-muted);
   font-size: 0.82rem;
 }
 
 .label-filter-panel-header strong,
 .label-filter-summary strong {
-  color: #f0f6fc;
+  color: var(--tea-text);
 }
 
 .label-filter-list {
@@ -779,31 +781,31 @@ dl {
 
 .label-filter-list button.active,
 .label-filter-list button[aria-pressed="true"] {
-  border-color: rgba(56, 139, 253, 0.72);
-  color: #dbeafe;
-  background: rgba(56, 139, 253, 0.18);
+  border-color: color-mix(in srgb, var(--tea-info) 72%, transparent);
+  color: var(--tea-info-text);
+  background: color-mix(in srgb, var(--tea-info) 18%, transparent);
 }
 
 .label-filter-empty {
-  color: #8b949e;
+  color: var(--tea-muted);
   font-size: 0.82rem;
 }
 
 .issue-search {
-  background: #0d1117;
+  background: var(--tea-bg);
 }
 
 .issue-count-summary {
-  color: #8b949e;
+  color: var(--tea-muted);
   font-size: 0.86rem;
 }
 
 .new-issue-panel {
   display: grid;
   gap: 0.9rem;
-  border-bottom: 1px solid #30363d;
+  border-bottom: 1px solid var(--tea-line);
   padding: 1rem;
-  background: #0f1620;
+  background: var(--tea-surface);
 }
 
 .new-issue-header,
@@ -818,13 +820,13 @@ dl {
 }
 
 .new-issue-header h2 {
-  color: #f0f6fc;
+  color: var(--tea-text);
   font-size: 1.05rem;
 }
 
 .new-issue-header p {
   margin-top: 0.2rem;
-  color: #8b949e;
+  color: var(--tea-muted);
 }
 
 .form-row {
@@ -835,14 +837,14 @@ dl {
 .template-panel {
   display: grid;
   gap: 0.55rem;
-  border: 1px solid #30363d;
+  border: 1px solid var(--tea-line);
   border-radius: 8px;
   padding: 0.75rem;
-  background: rgba(22, 27, 34, 0.72);
+  background: color-mix(in srgb, var(--tea-surface) 72%, transparent);
 }
 
 .template-panel h3 {
-  color: #f0f6fc;
+  color: var(--tea-text);
   font-size: 0.86rem;
 }
 
@@ -870,27 +872,8 @@ dl {
 }
 
 .new-issue-metadata label span {
-  color: #8b949e;
+  color: var(--tea-muted);
   font-size: 0.78rem;
-}
-
-.issue-pane,
-.issue-pane-list {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  overflow: hidden;
-}
-
-.issue-list-panel {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 0;
-}
-
-.issue-composer {
-  flex: 0 0 auto;
 }
 
 .issue-list {
@@ -921,11 +904,11 @@ dl {
   gap: 0.7rem;
   align-items: center;
   justify-content: space-between;
-  border-bottom: 1px solid #30363d;
+  border-bottom: 1px solid var(--tea-line);
   padding: 0.78rem 1rem;
-  color: #8b949e;
+  color: var(--tea-muted);
   font-size: 0.82rem;
-  background: rgba(22, 27, 34, 0.72);
+  background: color-mix(in srgb, var(--tea-surface) 72%, transparent);
 }
 
 .issue-list-pagination-actions {
@@ -944,7 +927,7 @@ dl {
   grid-template-columns: auto minmax(0, 1fr);
   gap: 0.2rem 0.75rem;
   border: 0;
-  border-bottom: 1px solid #30363d;
+  border-bottom: 1px solid var(--tea-line);
   border-radius: 0;
   padding: 0.95rem 1rem;
   text-align: left;
@@ -953,16 +936,16 @@ dl {
 
 .issue-item:hover:not(:disabled),
 .issue-item.selected {
-  background: rgba(56, 139, 253, 0.09);
+  background: color-mix(in srgb, var(--tea-accent) 9%, transparent);
 }
 
 .issue-item.selected {
-  box-shadow: inset 3px 0 0 #58a6ff;
+  box-shadow: inset 3px 0 0 var(--tea-accent);
 }
 
 .issue-item-selected {
   position: relative;
-  background: linear-gradient(90deg, rgba(56, 139, 253, 0.16), rgba(56, 139, 253, 0.04));
+  background: var(--tea-accent-soft);
 }
 
 .issue-state {
@@ -977,13 +960,13 @@ dl {
 }
 
 .issue-state.open {
-  color: #aff5b4;
-  background: rgba(46, 160, 67, 0.18);
+  color: var(--tea-success-text);
+  background: color-mix(in srgb, var(--tea-success) 18%, transparent);
 }
 
 .issue-state.closed {
-  color: #d2a8ff;
-  background: rgba(163, 113, 247, 0.18);
+  color: var(--tea-success-text);
+  background: color-mix(in srgb, var(--tea-success) 18%, transparent);
 }
 
 .issue-item-main {
@@ -1002,21 +985,21 @@ dl {
 
 .issue-item-main strong {
   overflow: hidden;
-  color: #f0f6fc;
+  color: var(--tea-text);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .issue-item-topline small {
   flex: 0 0 auto;
-  color: #8b949e;
+  color: var(--tea-muted);
   font-size: 0.72rem;
 }
 
 .issue-item-summary {
   grid-column: 2;
   overflow: hidden;
-  color: #c9d1d9;
+  color: var(--tea-text-soft);
   font-size: 0.83rem;
   line-height: 1.45;
   text-overflow: ellipsis;
@@ -1037,7 +1020,7 @@ dl {
   grid-column: 2;
   gap: 0.5rem 0.72rem;
   min-width: 0;
-  color: #8b949e;
+  color: var(--tea-muted);
 }
 
 .issue-item-compact-scanline > span {
@@ -1048,7 +1031,7 @@ dl {
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;
-  color: #8b949e;
+  color: var(--tea-muted);
   font-size: 0.74rem;
 }
 
@@ -1056,41 +1039,41 @@ dl {
   display: flex;
   flex-wrap: wrap;
   gap: 0.42rem;
-  color: #8b949e;
+  color: var(--tea-muted);
   font-size: 0.73rem;
 }
 
 .issue-item-latest-touch.muted {
-  color: #6e7681;
+  color: var(--tea-muted-low);
 }
 
 .issue-touch-badge {
-  border: 1px solid rgba(46, 160, 67, 0.34);
+  border: 1px solid color-mix(in srgb, var(--tea-success) 34%, transparent);
   border-radius: 999px;
   padding: 0.1rem 0.42rem;
-  color: #aff5b4;
+  color: var(--tea-success-text);
   font-size: 0.66rem;
   font-weight: 800;
-  background: rgba(46, 160, 67, 0.1);
+  background: color-mix(in srgb, var(--tea-success) 10%, transparent);
 }
 
 .issue-touch-badge.ai {
-  border-color: rgba(210, 168, 255, 0.4);
-  color: #d2a8ff;
-  background: rgba(163, 113, 247, 0.12);
+  border-color: color-mix(in srgb, var(--tea-info) 40%, transparent);
+  color: var(--tea-info-text);
+  background: color-mix(in srgb, var(--tea-info) 12%, transparent);
 }
 
 .issue-touch-badge.system {
-  border-color: rgba(210, 153, 34, 0.36);
-  color: #e3b341;
-  background: rgba(210, 153, 34, 0.12);
+  border-color: color-mix(in srgb, var(--tea-accent) 36%, transparent);
+  color: var(--tea-accent);
+  background: color-mix(in srgb, var(--tea-accent) 12%, transparent);
 }
 
 .issue-item-routing {
   display: flex;
   flex-wrap: wrap;
   gap: 0.45rem;
-  color: #8b949e;
+  color: var(--tea-muted);
   font-size: 0.73rem;
 }
 
@@ -1108,74 +1091,74 @@ dl {
 .issue-badge {
   display: inline-flex;
   align-items: center;
-  border: 1px solid #30363d;
+  border: 1px solid var(--tea-line);
   border-radius: 999px;
   padding: 0.14rem 0.46rem;
-  color: #c9d1d9;
+  color: var(--tea-text-soft);
   font-size: 0.7rem;
-  background: rgba(139, 148, 158, 0.12);
+  background: color-mix(in srgb, var(--tea-muted) 12%, transparent);
 }
 
 .issue-badge.tone-danger {
-  border-color: rgba(248, 81, 73, 0.4);
-  color: #ffa198;
-  background: rgba(248, 81, 73, 0.14);
+  border-color: color-mix(in srgb, var(--tea-danger) 40%, transparent);
+  color: var(--tea-danger-text);
+  background: color-mix(in srgb, var(--tea-danger) 14%, transparent);
 }
 
 .issue-badge.tone-muted {
-  border-color: rgba(139, 148, 158, 0.28);
-  color: #8b949e;
-  background: rgba(139, 148, 158, 0.08);
+  border-color: color-mix(in srgb, var(--tea-muted) 28%, transparent);
+  color: var(--tea-muted);
+  background: color-mix(in srgb, var(--tea-muted) 8%, transparent);
 }
 
 .issue-badge.tone-watch {
-  border-color: rgba(88, 166, 255, 0.42);
-  color: #a5d6ff;
-  background: rgba(56, 139, 253, 0.12);
+  border-color: color-mix(in srgb, var(--tea-info) 42%, transparent);
+  color: var(--tea-info-text);
+  background: color-mix(in srgb, var(--tea-info) 12%, transparent);
 }
 
 .issue-signal-chip {
   display: inline-flex;
   align-items: center;
   width: max-content;
-  border: 1px solid rgba(139, 148, 158, 0.34);
+  border: 1px solid color-mix(in srgb, var(--tea-muted) 34%, transparent);
   border-radius: 999px;
   padding: 0.14rem 0.5rem;
-  color: #c9d1d9;
+  color: var(--tea-text-soft);
   font-size: 0.7rem;
   font-weight: 800;
-  background: rgba(139, 148, 158, 0.1);
+  background: color-mix(in srgb, var(--tea-muted) 10%, transparent);
   white-space: nowrap;
 }
 
 .issue-signal-chip.tone-stale {
-  border-color: rgba(210, 153, 34, 0.42);
-  color: #e3b341;
-  background: rgba(210, 153, 34, 0.13);
+  border-color: color-mix(in srgb, var(--tea-accent) 42%, transparent);
+  color: var(--tea-accent);
+  background: color-mix(in srgb, var(--tea-accent) 13%, transparent);
 }
 
 .issue-signal-chip.tone-active {
-  border-color: rgba(46, 160, 67, 0.42);
-  color: #aff5b4;
-  background: rgba(46, 160, 67, 0.13);
+  border-color: color-mix(in srgb, var(--tea-success) 42%, transparent);
+  color: var(--tea-success-text);
+  background: color-mix(in srgb, var(--tea-success) 13%, transparent);
 }
 
 .issue-signal-chip.tone-review {
-  border-color: rgba(248, 81, 73, 0.45);
-  color: #ffa198;
-  background: rgba(248, 81, 73, 0.15);
+  border-color: color-mix(in srgb, var(--tea-danger) 45%, transparent);
+  color: var(--tea-danger-text);
+  background: color-mix(in srgb, var(--tea-danger) 15%, transparent);
 }
 
 .issue-signal-chip.tone-success {
-  border-color: rgba(63, 185, 80, 0.42);
-  color: #aff5b4;
-  background: rgba(46, 160, 67, 0.1);
+  border-color: color-mix(in srgb, var(--tea-success) 42%, transparent);
+  color: var(--tea-success-text);
+  background: color-mix(in srgb, var(--tea-success) 10%, transparent);
 }
 
 .issue-signal-chip.tone-muted {
-  border-color: rgba(139, 148, 158, 0.28);
-  color: #8b949e;
-  background: rgba(139, 148, 158, 0.08);
+  border-color: color-mix(in srgb, var(--tea-muted) 28%, transparent);
+  color: var(--tea-muted);
+  background: color-mix(in srgb, var(--tea-muted) 8%, transparent);
 }
 
 .issue-signal-with-reason {
@@ -1188,7 +1171,7 @@ dl {
 .issue-signal-reason {
   overflow: hidden;
   max-width: 16rem;
-  color: #8b949e;
+  color: var(--tea-muted);
   font-size: 0.7rem;
   font-weight: 700;
   text-overflow: ellipsis;
@@ -1201,39 +1184,39 @@ dl {
   width: max-content;
   max-width: 17rem;
   overflow: hidden;
-  border: 1px solid rgba(139, 148, 158, 0.26);
+  border: 1px solid color-mix(in srgb, var(--tea-muted) 26%, transparent);
   border-radius: 999px;
   padding: 0.14rem 0.52rem;
-  color: #c9d1d9;
+  color: var(--tea-text-soft);
   font-size: 0.7rem;
   font-weight: 800;
   text-overflow: ellipsis;
   white-space: nowrap;
-  background: rgba(139, 148, 158, 0.08);
+  background: color-mix(in srgb, var(--tea-muted) 8%, transparent);
 }
 
 .issue-action-hint.tone-review {
-  border-color: rgba(248, 81, 73, 0.42);
-  color: #ffa198;
-  background: rgba(248, 81, 73, 0.12);
+  border-color: color-mix(in srgb, var(--tea-danger) 42%, transparent);
+  color: var(--tea-danger-text);
+  background: color-mix(in srgb, var(--tea-danger) 12%, transparent);
 }
 
 .issue-action-hint.tone-run {
-  border-color: rgba(88, 166, 255, 0.4);
-  color: #a5d6ff;
-  background: rgba(56, 139, 253, 0.12);
+  border-color: color-mix(in srgb, var(--tea-info) 40%, transparent);
+  color: var(--tea-info-text);
+  background: color-mix(in srgb, var(--tea-info) 12%, transparent);
 }
 
 .issue-action-hint.tone-stale {
-  border-color: rgba(210, 153, 34, 0.4);
-  color: #e3b341;
-  background: rgba(210, 153, 34, 0.12);
+  border-color: color-mix(in srgb, var(--tea-accent) 40%, transparent);
+  color: var(--tea-accent);
+  background: color-mix(in srgb, var(--tea-accent) 12%, transparent);
 }
 
 .issue-action-hint.tone-audit {
-  border-color: rgba(63, 185, 80, 0.4);
-  color: #aff5b4;
-  background: rgba(46, 160, 67, 0.1);
+  border-color: color-mix(in srgb, var(--tea-success) 40%, transparent);
+  color: var(--tea-success-text);
+  background: color-mix(in srgb, var(--tea-success) 10%, transparent);
 }
 
 .issue-item-labels {
@@ -1255,7 +1238,7 @@ dl {
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;
-  color: #8b949e;
+  color: var(--tea-muted);
   font-size: 0.76rem;
 }
 
@@ -1311,12 +1294,12 @@ dl {
 
 .issue-item-labels span,
 .label-stack span {
-  border: 1px solid rgba(88, 166, 255, 0.28);
+  border: 1px solid color-mix(in srgb, var(--tea-info) 28%, transparent);
   border-radius: 999px;
   padding: 0.14rem 0.46rem;
-  color: #79c0ff;
+  color: var(--tea-info-text);
   font-size: 0.72rem;
-  background: rgba(56, 139, 253, 0.12);
+  background: color-mix(in srgb, var(--tea-info) 12%, transparent);
 }
 
 .empty {
@@ -1328,35 +1311,35 @@ dl {
   gap: 0.55rem;
   margin: 0.75rem;
   padding: 1rem;
-  border: 1px dashed rgba(210, 153, 34, 0.42);
+  border: 1px dashed color-mix(in srgb, var(--tea-accent) 42%, transparent);
   border-radius: 14px;
-  color: #8b949e;
-  background: rgba(187, 128, 9, 0.1);
+  color: var(--tea-muted);
+  background: color-mix(in srgb, var(--tea-accent) 10%, transparent);
 }
 
 .watched-empty-state strong {
-  color: #f0f6fc;
+  color: var(--tea-text);
 }
 
 .watched-empty-state button {
   justify-self: start;
-  border: 1px solid rgba(210, 153, 34, 0.58);
+  border: 1px solid color-mix(in srgb, var(--tea-accent) 58%, transparent);
   border-radius: 999px;
   padding: 0.42rem 0.78rem;
-  color: #f0f6fc;
-  background: rgba(210, 153, 34, 0.18);
+  color: var(--tea-text);
+  background: color-mix(in srgb, var(--tea-accent) 18%, transparent);
 }
 
 .watched-empty-state button:hover {
-  border-color: rgba(210, 153, 34, 0.86);
-  background: rgba(210, 153, 34, 0.26);
+  border-color: color-mix(in srgb, var(--tea-accent) 86%, transparent);
+  background: color-mix(in srgb, var(--tea-accent) 26%, transparent);
 }
 
 .issue-detail {
   min-width: 0;
   min-height: 0;
   overflow: auto;
-  background: #0d1117;
+  background: var(--tea-bg);
 }
 
 .empty-detail {
@@ -1369,20 +1352,17 @@ dl {
 
 .empty-detail h2,
 .issue-titlebar h2 {
-  color: #f0f6fc;
-}
-
-.issue-titlebar {
-  border-bottom: 1px solid #30363d;
-  padding: 1.2rem 1.5rem;
-  background: #0d1117;
+  color: var(--tea-text);
 }
 
 .issue-titlebar {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(280px, 0.72fr);
-  gap: 1rem 1.2rem;
   align-items: start;
+  gap: 1rem 1.2rem;
+  border-bottom: 1px solid var(--tea-line);
+  padding: 1.2rem 1.5rem;
+  background: var(--tea-bg);
 }
 
 .issue-title-primary,
@@ -1401,7 +1381,7 @@ dl {
   flex-wrap: wrap;
   align-items: center;
   gap: 0.5rem;
-  color: #8b949e;
+  color: var(--tea-muted);
   font-size: 0.78rem;
   font-weight: 700;
 }
@@ -1409,11 +1389,11 @@ dl {
 .issue-number-badge {
   display: inline-flex;
   align-items: center;
-  border: 1px solid #30363d;
+  border: 1px solid var(--tea-line);
   border-radius: 999px;
   padding: 0.18rem 0.56rem;
-  color: #c9d1d9;
-  background: #161b22;
+  color: var(--tea-text-soft);
+  background: var(--tea-surface);
 }
 
 .issue-title-heading {
@@ -1421,25 +1401,21 @@ dl {
   gap: 0.2rem;
 }
 
-.issue-title-subline {
-  color: #8b949e;
-  font-size: 0.86rem;
-  line-height: 1.45;
-}
-
 .issue-title-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
+  gap: 0.35rem 0.65rem;
 }
 
 .issue-title-meta span {
-  border: 1px solid #30363d;
-  border-radius: 999px;
-  padding: 0.18rem 0.5rem;
-  color: #8b949e;
+  padding: 0;
+  color: var(--tea-muted);
   font-size: 0.76rem;
-  background: #161b22;
+}
+
+.issue-title-meta span + span {
+  border-left: 1px solid var(--tea-line);
+  padding-left: 0.65rem;
 }
 
 .issue-queue-navigation {
@@ -1456,62 +1432,20 @@ dl {
 }
 
 .issue-queue-navigation.outside-queue {
-  border: 1px solid rgba(210, 153, 34, 0.22);
+  border: 1px solid color-mix(in srgb, var(--tea-accent) 22%, transparent);
   border-radius: 10px;
   padding: 0.44rem;
-  background: rgba(210, 153, 34, 0.08);
+  background: color-mix(in srgb, var(--tea-accent) 8%, transparent);
 }
 
 .issue-queue-position {
-  border: 1px solid rgba(139, 148, 158, 0.22);
+  border: 1px solid color-mix(in srgb, var(--tea-muted) 22%, transparent);
   border-radius: 999px;
   padding: 0.18rem 0.52rem;
-  color: #8b949e;
+  color: var(--tea-muted);
   font-size: 0.74rem;
   font-weight: 800;
-  background: rgba(13, 17, 23, 0.68);
-}
-
-.issue-title-context {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.45rem;
-}
-
-.issue-title-context span {
-  border: 1px solid rgba(139, 148, 158, 0.28);
-  border-radius: 999px;
-  padding: 0.16rem 0.5rem;
-  color: #c9d1d9;
-  font-size: 0.75rem;
-  background: rgba(139, 148, 158, 0.09);
-}
-
-.issue-title-context .issue-title-watch.watched {
-  border-color: rgba(88, 166, 255, 0.42);
-  color: #a5d6ff;
-  background: rgba(56, 139, 253, 0.13);
-}
-
-.issue-title-context .issue-title-watch.unwatched {
-  border-color: rgba(139, 148, 158, 0.2);
-  color: #8b949e;
-  background: rgba(139, 148, 158, 0.07);
-}
-
-.issue-title-labels {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.35rem;
-}
-
-.issue-title-labels span {
-  border: 1px solid rgba(88, 166, 255, 0.28);
-  border-radius: 999px;
-  padding: 0.14rem 0.46rem;
-  color: #79c0ff;
-  font-size: 0.72rem;
-  background: rgba(56, 139, 253, 0.12);
+  background: color-mix(in srgb, var(--tea-bg) 68%, transparent);
 }
 
 .issue-detail-actions {
@@ -1526,29 +1460,29 @@ dl {
 }
 
 .issue-detail-actions .watching {
-  border-color: rgba(46, 160, 67, 0.72);
-  color: #aff5b4;
-  background: rgba(46, 160, 67, 0.14);
+  border-color: color-mix(in srgb, var(--tea-success) 72%, transparent);
+  color: var(--tea-success-text);
+  background: color-mix(in srgb, var(--tea-success) 14%, transparent);
 }
 
 .issue-edit-form {
   display: grid;
   gap: 0.75rem;
-  border: 1px solid #30363d;
+  border: 1px solid var(--tea-line);
   border-radius: 10px;
   padding: 0.9rem;
-  background: rgba(22, 27, 34, 0.72);
+  background: color-mix(in srgb, var(--tea-surface) 72%, transparent);
 }
 
 .issue-edit-form label {
   display: grid;
   gap: 0.3rem;
   font-size: 0.82rem;
-  color: #8b949e;
+  color: var(--tea-muted);
 }
 
 .issue-edit-form label span {
-  color: #f0f6fc;
+  color: var(--tea-text);
   font-weight: 600;
 }
 
@@ -1556,17 +1490,17 @@ dl {
 .issue-edit-form textarea {
   width: 100%;
   padding: 0.42rem 0.6rem;
-  border: 1px solid #30363d;
+  border: 1px solid var(--tea-line);
   border-radius: 8px;
-  background: rgba(13, 17, 23, 0.72);
-  color: #f0f6fc;
+  background: color-mix(in srgb, var(--tea-bg) 72%, transparent);
+  color: var(--tea-text);
   font-size: 0.85rem;
   font-family: inherit;
   resize: vertical;
 }
 
 .issue-edit-form small {
-  color: #8b949e;
+  color: var(--tea-muted);
   font-size: 0.76rem;
 }
 
@@ -1578,11 +1512,9 @@ dl {
 
 .label-editor {
   display: grid;
-  gap: 0.75rem;
-  border: 1px solid #30363d;
-  border-radius: 10px;
-  padding: 0.9rem;
-  background: rgba(22, 27, 34, 0.72);
+  gap: 0.6rem;
+  border-top: 1px solid var(--tea-line);
+  padding-top: 0.65rem;
 }
 
 .label-editor-header {
@@ -1591,12 +1523,12 @@ dl {
 }
 
 .label-editor-header strong {
-  color: #f0f6fc;
+  color: var(--tea-text);
 }
 
 .label-editor-header span,
 .label-empty {
-  color: #8b949e;
+  color: var(--tea-muted);
   font-size: 0.82rem;
 }
 
@@ -1617,50 +1549,29 @@ dl {
   gap: 0.55rem;
 }
 
-.label-chip {
-  display: inline-flex;
-  gap: 0.35rem;
-  align-items: center;
-  border: 1px solid rgba(88, 166, 255, 0.28);
-  border-radius: 999px;
-  padding: 0.22rem 0.28rem 0.22rem 0.52rem;
-  color: #79c0ff;
-  font-size: 0.74rem;
-  background: rgba(56, 139, 253, 0.12);
-}
-
 .label-remove {
   border: 0;
   border-radius: 999px;
   padding: 0.18rem 0.45rem;
-  color: #ffa198;
+  color: var(--tea-danger-text);
   font-size: 0.7rem;
-  background: rgba(248, 81, 73, 0.14);
+  background: color-mix(in srgb, var(--tea-danger) 14%, transparent);
 }
 
 .label-remove:hover:not(:disabled) {
-  background: rgba(248, 81, 73, 0.24);
+  background: color-mix(in srgb, var(--tea-danger) 24%, transparent);
 }
 
-/* Local notes are private, desktop-only annotations. They use a distinct
-   amber/dashed style so they are never mistaken for authoritative daemon
-   labels (which are solid blue). */
-.issue-title-notes {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.4rem;
-  margin-top: 0.35rem;
-}
-
+/* Local notes remain visually distinct from authoritative daemon labels. */
 .local-note-chip {
   display: inline-flex;
   align-items: center;
-  border: 1px dashed rgba(210, 168, 255, 0.5);
+  border: 1px dashed color-mix(in srgb, var(--tea-muted) 55%, transparent);
   border-radius: 999px;
   padding: 0.18rem 0.55rem;
-  color: #d2a8ff;
+  color: var(--tea-text-soft);
   font-size: 0.72rem;
-  background: rgba(163, 113, 247, 0.1);
+  background: color-mix(in srgb, var(--tea-muted) 8%, transparent);
 }
 
 .label-stack-notes {
@@ -1668,12 +1579,12 @@ dl {
 }
 
 .issue-item-note {
-  border: 1px dashed rgba(210, 168, 255, 0.5);
+  border: 1px dashed color-mix(in srgb, var(--tea-muted) 55%, transparent);
   border-radius: 999px;
   padding: 0.08rem 0.42rem;
-  color: #d2a8ff;
+  color: var(--tea-text-soft);
   font-size: 0.68rem;
-  background: rgba(163, 113, 247, 0.1);
+  background: color-mix(in srgb, var(--tea-muted) 8%, transparent);
 }
 
 .issue-titlebar h2 {
@@ -1702,40 +1613,24 @@ dl {
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
-  border: 1px solid #30363d;
-  border-radius: 8px;
-  padding: 0.8rem 0.95rem;
-  background: #161b22;
+  border-bottom: 1px solid var(--tea-line);
+  padding: 0 0 0.7rem;
 }
 
 .conversation-header h3 {
-  color: #f0f6fc;
+  color: var(--tea-text);
   font-size: 1rem;
 }
 
 .conversation-header p {
   margin-top: 0.18rem;
-  color: #8b949e;
+  color: var(--tea-muted);
   font-size: 0.86rem;
-}
-
-.conversation-header > span {
-  border: 1px solid rgba(46, 160, 67, 0.36);
-  border-radius: 999px;
-  padding: 0.22rem 0.6rem;
-  color: #aff5b4;
-  font-size: 0.78rem;
-  font-weight: 800;
-  background: rgba(46, 160, 67, 0.12);
 }
 
 .section-focus-card {
   display: grid;
   gap: 1rem;
-  border: 1px solid #30363d;
-  border-radius: 10px;
-  padding: 1rem;
-  background: rgba(22, 27, 34, 0.5);
 }
 
 .section-focus-card > header {
@@ -1743,50 +1638,36 @@ dl {
   align-items: flex-start;
   justify-content: space-between;
   gap: 1rem;
-  border-bottom: 1px solid #30363d;
+  border-bottom: 1px solid var(--tea-line);
   padding-bottom: 0.85rem;
 }
 
 .section-focus-card > header h3 {
-  color: #f0f6fc;
+  color: var(--tea-text);
   font-size: 1.05rem;
-}
-
-.section-focus-card > header p {
-  margin-top: 0.18rem;
-  color: #8b949e;
-  font-size: 0.86rem;
 }
 
 .section-focus-card > header > span {
   flex: 0 0 auto;
-  border: 1px solid #30363d;
+  border: 1px solid var(--tea-line);
   border-radius: 999px;
   padding: 0.22rem 0.6rem;
-  color: #c9d1d9;
+  color: var(--tea-text-soft);
   font-size: 0.78rem;
   font-weight: 800;
-  background: #21262d;
+  background: var(--tea-control);
 }
 
 .section-focus-empty {
   display: grid;
   gap: 0.28rem;
-  border: 1px dashed #30363d;
-  border-radius: 8px;
-  padding: 0.85rem 0.95rem;
-  color: #8b949e;
-  background: rgba(13, 17, 23, 0.56);
+  border-left: 2px solid var(--tea-line);
+  padding: 0.45rem 0.75rem;
+  color: var(--tea-muted);
 }
 
 .section-focus-empty strong {
-  color: #dbe6f4;
-}
-
-.section-focus-hint {
-  color: #8b949e;
-  font-size: 0.86rem;
-  line-height: 1.55;
+  color: var(--tea-text);
 }
 
 .focused-actions {
@@ -1807,7 +1688,7 @@ dl {
 }
 
 .focused-settings-list dt {
-  color: #8b949e;
+  color: var(--tea-muted);
 }
 
 .config-source-badge {
@@ -1822,21 +1703,21 @@ dl {
 }
 
 .config-source-badge.local {
-  color: #aff5b4;
-  background: rgba(46, 160, 67, 0.16);
-  border: 1px solid rgba(46, 160, 67, 0.5);
+  color: var(--tea-success-text);
+  background: color-mix(in srgb, var(--tea-success) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--tea-success) 50%, transparent);
 }
 
 .config-source-badge.loom-managed {
-  color: #d2a8ff;
-  background: rgba(163, 113, 247, 0.16);
-  border: 1px solid rgba(163, 113, 247, 0.5);
+  color: var(--tea-info-text);
+  background: color-mix(in srgb, var(--tea-info) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--tea-info) 50%, transparent);
 }
 
 .config-source-badge.fallback {
-  color: #f8e3a1;
-  background: rgba(210, 153, 34, 0.16);
-  border: 1px solid rgba(210, 153, 34, 0.5);
+  color: var(--tea-accent);
+  background: color-mix(in srgb, var(--tea-accent) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--tea-accent) 50%, transparent);
 }
 
 .settings-config-editor {
@@ -1844,9 +1725,9 @@ dl {
   gap: 0.65rem;
   margin-top: 0.4rem;
   padding: 0.85rem;
-  border: 1px solid rgba(139, 148, 158, 0.2);
+  border: 1px solid color-mix(in srgb, var(--tea-muted) 20%, transparent);
   border-radius: 8px;
-  background: rgba(22, 27, 34, 0.5);
+  background: color-mix(in srgb, var(--tea-surface) 50%, transparent);
 }
 
 .settings-config-intro {
@@ -1855,11 +1736,11 @@ dl {
 }
 
 .settings-config-intro strong {
-  color: #f0f6fc;
+  color: var(--tea-text);
 }
 
 .settings-config-intro span {
-  color: #8b949e;
+  color: var(--tea-muted);
   font-size: 0.78rem;
 }
 
@@ -1867,9 +1748,9 @@ dl {
   margin: 0;
   padding: 0.4rem 0.55rem;
   border-radius: 6px;
-  color: #f8e3a1;
-  background: rgba(210, 153, 34, 0.12);
-  border: 1px solid rgba(210, 153, 34, 0.4);
+  color: var(--tea-accent);
+  background: color-mix(in srgb, var(--tea-accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--tea-accent) 40%, transparent);
   font-size: 0.78rem;
 }
 
@@ -1877,7 +1758,7 @@ dl {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  color: #c9d1d9;
+  color: var(--tea-text-soft);
   font-size: 0.85rem;
 }
 
@@ -1887,17 +1768,17 @@ dl {
 }
 
 .settings-config-field span {
-  color: #8b949e;
+  color: var(--tea-muted);
   font-size: 0.76rem;
   font-weight: 600;
 }
 
 .settings-config-field select {
   padding: 0.42rem 0.55rem;
-  border: 1px solid #30363d;
+  border: 1px solid var(--tea-line);
   border-radius: 6px;
-  background: rgba(13, 17, 23, 0.6);
-  color: #c9d1d9;
+  background: color-mix(in srgb, var(--tea-bg) 60%, transparent);
+  color: var(--tea-text-soft);
   font-size: 0.83rem;
 }
 
@@ -1908,9 +1789,9 @@ dl {
 }
 
 .settings-config-actions .action-primary {
-  border-color: rgba(46, 160, 67, 0.72);
-  color: #aff5b4;
-  background: rgba(46, 160, 67, 0.16);
+  border-color: color-mix(in srgb, var(--tea-success) 72%, transparent);
+  color: var(--tea-success-text);
+  background: color-mix(in srgb, var(--tea-success) 16%, transparent);
 }
 
 .loom-managed-settings {
@@ -1918,18 +1799,18 @@ dl {
   gap: 0.4rem;
   margin-top: 0.4rem;
   padding: 0.85rem;
-  border: 1px solid rgba(163, 113, 247, 0.4);
+  border: 1px solid color-mix(in srgb, var(--tea-info) 40%, transparent);
   border-radius: 8px;
-  background: rgba(163, 113, 247, 0.1);
+  background: color-mix(in srgb, var(--tea-info) 10%, transparent);
 }
 
 .loom-managed-settings strong {
-  color: #d2a8ff;
+  color: var(--tea-info-text);
 }
 
 .loom-managed-settings p {
   margin: 0;
-  color: #c9d1d9;
+  color: var(--tea-text-soft);
   font-size: 0.8rem;
 }
 
@@ -1937,39 +1818,21 @@ dl {
   justify-self: start;
   padding: 0.42rem 0.7rem;
   border-radius: 6px;
-  color: #d2a8ff;
-  background: rgba(163, 113, 247, 0.16);
-  border: 1px solid rgba(163, 113, 247, 0.55);
+  color: var(--tea-info-text);
+  background: color-mix(in srgb, var(--tea-info) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--tea-info) 55%, transparent);
   text-decoration: none;
   font-size: 0.83rem;
   font-weight: 600;
 }
 
 .loom-settings-link:hover {
-  background: rgba(163, 113, 247, 0.28);
+  background: color-mix(in srgb, var(--tea-info) 28%, transparent);
 }
 
 .loom-settings-missing {
-  color: #8b949e;
+  color: var(--tea-muted);
   font-size: 0.78rem;
-}
-
-.meta-highlight {
-  display: grid;
-  gap: 0.35rem;
-  border: 1px solid #30363d;
-  border-radius: 8px;
-  padding: 0.75rem 0.8rem;
-  background: rgba(22, 27, 34, 0.6);
-}
-
-.meta-highlight strong {
-  color: #f0f6fc;
-}
-
-.meta-highlight span {
-  color: #8b949e;
-  font-size: 0.82rem;
 }
 
 .comment-with-avatar {
@@ -1984,12 +1847,12 @@ dl {
   width: 36px;
   height: 36px;
   place-items: center;
-  border: 1px solid #30363d;
+  border: 1px solid var(--tea-line);
   border-radius: 999px;
-  color: #0d1117;
+  color: var(--tea-bg);
   font-size: 0.78rem;
   font-weight: 900;
-  background: linear-gradient(135deg, #79c0ff, #aff5b4);
+  background: var(--tea-success);
 }
 
 .comment-avatar.small {
@@ -2006,7 +1869,7 @@ dl {
 
 .conversation-stream h3,
 .comment-list > h3 {
-  color: #f0f6fc;
+  color: var(--tea-text);
   font-size: 1rem;
 }
 
@@ -2019,7 +1882,7 @@ dl {
 
 .conversation-stream-header p {
   margin-top: 0.2rem;
-  color: #8b949e;
+  color: var(--tea-muted);
   font-size: 0.84rem;
 }
 
@@ -2032,29 +1895,29 @@ dl {
 }
 
 .conversation-stats span {
-  border: 1px solid #30363d;
+  border: 1px solid var(--tea-line);
   border-radius: 999px;
   padding: 0.18rem 0.5rem;
-  color: #8b949e;
+  color: var(--tea-muted);
   font-size: 0.74rem;
-  background: rgba(22, 27, 34, 0.78);
+  background: color-mix(in srgb, var(--tea-surface) 78%, transparent);
 }
 
 .conversation-filter-tabs {
   display: inline-flex;
   width: max-content;
   overflow: hidden;
-  border: 1px solid #30363d;
+  border: 1px solid var(--tea-line);
   border-radius: 999px;
-  background: #161b22;
+  background: var(--tea-surface);
 }
 
 .conversation-filter-tabs button {
   border: 0;
-  border-right: 1px solid #30363d;
+  border-right: 1px solid var(--tea-line);
   border-radius: 0;
   padding: 0.42rem 0.72rem;
-  color: #8b949e;
+  color: var(--tea-muted);
   font-size: 0.82rem;
   background: transparent;
 }
@@ -2065,54 +1928,54 @@ dl {
 
 .conversation-filter-tabs button[aria-selected="true"],
 .conversation-filter-tabs button.active {
-  color: #f0f6fc;
-  background: #21262d;
+  color: var(--tea-text);
+  background: var(--tea-control);
 }
 
 .conversation-filter-tabs span {
   margin-left: 0.25rem;
-  color: #8b949e;
+  color: var(--tea-muted);
   font-size: 0.74rem;
 }
 
 .comment-editor-tabs {
   display: flex;
   gap: 0;
-  border-bottom: 1px solid #30363d;
-  background: #161b22;
+  border-bottom: 1px solid var(--tea-line);
+  background: var(--tea-surface);
 }
 
 .comment-editor-tabs button {
   border: 0;
-  border-right: 1px solid #30363d;
+  border-right: 1px solid var(--tea-line);
   border-radius: 0;
   padding: 0.58rem 0.85rem;
-  color: #8b949e;
+  color: var(--tea-muted);
   background: transparent;
 }
 
 .comment-editor-tabs button.active,
 .comment-editor-tabs button[aria-selected="true"] {
-  color: #f0f6fc;
+  color: var(--tea-text);
   font-weight: 700;
-  background: #0d1117;
+  background: var(--tea-bg);
 }
 
 .comment-editor textarea {
   min-height: 120px;
   border: 0;
   border-radius: 0;
-  background: #0d1117;
+  background: var(--tea-bg);
 }
 
 .comment-editor textarea:disabled {
-  color: #8b949e;
-  background: #010409;
+  color: var(--tea-muted);
+  background: var(--tea-bg-deep);
 }
 
 .comment-preview {
   min-height: 120px;
-  background: #0d1117;
+  background: var(--tea-bg);
 }
 
 .comment-preview .markdown-body {
@@ -2124,25 +1987,25 @@ dl {
   align-items: center;
   justify-content: space-between;
   gap: 0.75rem;
-  border-top: 1px solid #30363d;
+  border-top: 1px solid var(--tea-line);
   padding: 0.75rem 0.85rem;
-  color: #8b949e;
+  color: var(--tea-muted);
   font-size: 0.82rem;
-  background: #161b22;
+  background: var(--tea-surface);
 }
 
 .comment-editor-footer button {
-  border-color: rgba(46, 160, 67, 0.8);
-  color: #ffffff;
+  border-color: color-mix(in srgb, var(--tea-success) 80%, transparent);
+  color: var(--tea-text);
   font-weight: 700;
-  background: #238636;
+  background: var(--tea-success);
 }
 
 .issue-comment {
   overflow: hidden;
-  border: 1px solid #30363d;
+  border: 1px solid var(--tea-line);
   border-radius: 8px;
-  background: #0d1117;
+  background: var(--tea-bg);
 }
 
 .issue-comment-header {
@@ -2150,16 +2013,16 @@ dl {
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
-  border-bottom: 1px solid #30363d;
+  border-bottom: 1px solid var(--tea-line);
   padding: 0.72rem 0.85rem;
-  background: #161b22;
+  background: var(--tea-surface);
 }
 
 .markdown-body {
   display: grid;
   gap: 0.85rem;
   padding: 1rem;
-  color: #dbe6f4;
+  color: var(--tea-text);
   line-height: 1.64;
   white-space: pre-wrap;
 }
@@ -2180,43 +2043,42 @@ dl {
   left: 0.3rem;
   width: 2px;
   content: "";
-  background: #30363d;
+  background: var(--tea-line);
 }
 
 .timeline h3,
 .runs-panel h3 {
-  color: #f0f6fc;
+  color: var(--tea-text);
   font-size: 1rem;
 }
 
-.conversation-entry,
-.timeline-event {
+.conversation-entry {
   position: relative;
   display: grid;
 }
 
 .conversation-entry.event .issue-comment {
-  border-color: rgba(88, 166, 255, 0.28);
-  background: rgba(13, 17, 23, 0.92);
+  border-color: color-mix(in srgb, var(--tea-info) 28%, transparent);
+  background: color-mix(in srgb, var(--tea-bg) 92%, transparent);
 }
 
 .timeline-event-group .issue-comment {
   border-style: dashed;
-  border-color: rgba(139, 148, 158, 0.34);
-  background: rgba(13, 17, 23, 0.78);
+  border-color: color-mix(in srgb, var(--tea-muted) 34%, transparent);
+  background: color-mix(in srgb, var(--tea-bg) 78%, transparent);
 }
 
 .conversation-entry.event .issue-comment-header {
-  background: rgba(56, 139, 253, 0.08);
+  background: color-mix(in srgb, var(--tea-info) 8%, transparent);
 }
 
 .conversation-entry.linked .issue-comment {
-  border-color: rgba(210, 168, 255, 0.58);
-  box-shadow: 0 0 0 1px rgba(210, 168, 255, 0.18), 0 10px 24px rgba(0, 0, 0, 0.18);
+  border-color: color-mix(in srgb, var(--tea-info) 58%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--tea-info) 18%, transparent), 0 10px 24px color-mix(in srgb, var(--tea-shadow) 18%, transparent);
 }
 
 .conversation-entry.linked .timeline-marker {
-  background: #d2a8ff;
+  background: var(--tea-info-text);
 }
 
 .conversation-entry-title {
@@ -2228,41 +2090,41 @@ dl {
 }
 
 .conversation-entry-kind {
-  border: 1px solid rgba(46, 160, 67, 0.34);
+  border: 1px solid color-mix(in srgb, var(--tea-success) 34%, transparent);
   border-radius: 999px;
   padding: 0.12rem 0.45rem;
-  color: #aff5b4;
+  color: var(--tea-success-text);
   font-size: 0.68rem;
   font-weight: 800;
-  background: rgba(46, 160, 67, 0.1);
+  background: color-mix(in srgb, var(--tea-success) 10%, transparent);
 }
 
 .conversation-entry-kind.event {
-  border-color: rgba(88, 166, 255, 0.34);
-  color: #79c0ff;
-  background: rgba(56, 139, 253, 0.12);
+  border-color: color-mix(in srgb, var(--tea-info) 34%, transparent);
+  color: var(--tea-info-text);
+  background: color-mix(in srgb, var(--tea-info) 12%, transparent);
 }
 
 .conversation-entry-group {
-  border: 1px solid rgba(139, 148, 158, 0.34);
+  border: 1px solid color-mix(in srgb, var(--tea-muted) 34%, transparent);
   border-radius: 999px;
   padding: 0.12rem 0.45rem;
-  color: #c9d1d9;
+  color: var(--tea-text-soft);
   font-size: 0.68rem;
   font-weight: 800;
-  background: rgba(139, 148, 158, 0.1);
+  background: color-mix(in srgb, var(--tea-muted) 10%, transparent);
 }
 
 .conversation-entry-group.ai {
-  border-color: rgba(210, 168, 255, 0.42);
-  color: #d2a8ff;
-  background: rgba(163, 113, 247, 0.14);
+  border-color: color-mix(in srgb, var(--tea-info) 42%, transparent);
+  color: var(--tea-info-text);
+  background: color-mix(in srgb, var(--tea-info) 14%, transparent);
 }
 
 .conversation-entry-group.system {
-  border-color: rgba(210, 153, 34, 0.38);
-  color: #e3b341;
-  background: rgba(210, 153, 34, 0.12);
+  border-color: color-mix(in srgb, var(--tea-accent) 38%, transparent);
+  color: var(--tea-accent);
+  background: color-mix(in srgb, var(--tea-accent) 12%, transparent);
 }
 
 .conversation-entry-actions {
@@ -2275,46 +2137,46 @@ dl {
 }
 
 .conversation-entry-meta {
-  color: #8b949e;
+  color: var(--tea-muted);
   font-size: 0.78rem;
 }
 
 .conversation-entry-summary {
-  border-top: 1px solid rgba(139, 148, 158, 0.14);
+  border-top: 1px solid color-mix(in srgb, var(--tea-muted) 14%, transparent);
   padding: 0.58rem 0.85rem;
-  color: #8b949e;
+  color: var(--tea-muted);
   font-size: 0.8rem;
-  background: rgba(22, 27, 34, 0.42);
+  background: color-mix(in srgb, var(--tea-surface) 42%, transparent);
 }
 
 .timeline-event-group-summary {
   margin: 0;
-  border-top: 1px solid rgba(139, 148, 158, 0.14);
+  border-top: 1px solid color-mix(in srgb, var(--tea-muted) 14%, transparent);
   padding: 0.58rem 0.85rem;
-  color: #8b949e;
+  color: var(--tea-muted);
   font-size: 0.8rem;
-  background: rgba(22, 27, 34, 0.34);
+  background: color-mix(in srgb, var(--tea-surface) 34%, transparent);
 }
 
 .timeline-event-group-list {
   display: grid;
   gap: 0.45rem;
   margin: 0;
-  border-top: 1px solid rgba(139, 148, 158, 0.14);
+  border-top: 1px solid color-mix(in srgb, var(--tea-muted) 14%, transparent);
   padding: 0.7rem 0.85rem;
   list-style: none;
 }
 
 .timeline-event-group-list li {
   overflow: hidden;
-  border: 1px solid rgba(48, 54, 61, 0.72);
+  border: 1px solid color-mix(in srgb, var(--tea-line) 72%, transparent);
   border-radius: 8px;
-  background: rgba(1, 4, 9, 0.5);
+  background: color-mix(in srgb, var(--tea-bg-deep) 50%, transparent);
 }
 
 .timeline-event-group-list li.linked {
-  border-color: rgba(210, 168, 255, 0.65);
-  box-shadow: inset 3px 0 0 #d2a8ff;
+  border-color: color-mix(in srgb, var(--tea-info) 65%, transparent);
+  box-shadow: inset 3px 0 0 var(--tea-info-text);
 }
 
 .timeline-event-group-member {
@@ -2329,54 +2191,54 @@ dl {
   gap: 0.4rem;
   align-items: baseline;
   justify-content: space-between;
-  color: #c9d1d9;
+  color: var(--tea-text-soft);
   font-size: 0.82rem;
 }
 
 .timeline-event-group-member small {
-  color: #8b949e;
+  color: var(--tea-muted);
   font-size: 0.72rem;
 }
 
 .timeline-event-group-member p {
   margin: 0;
-  color: #8b949e;
+  color: var(--tea-muted);
   font-size: 0.77rem;
 }
 
 .timeline-entry-anchor {
-  color: #8b949e;
+  color: var(--tea-muted);
   font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
   font-size: 0.74rem;
   text-decoration: none;
 }
 
 .timeline-entry-anchor:hover {
-  color: #c9d1d9;
+  color: var(--tea-text-soft);
   text-decoration: underline;
 }
 
 .timeline-entry-link {
   border: 0;
   padding: 0;
-  color: #79c0ff;
+  color: var(--tea-info-text);
   font-size: 0.76rem;
   background: transparent;
 }
 
 .timeline-entry-link:hover:not(:disabled) {
-  color: #a5d6ff;
+  color: var(--tea-info-text);
   text-decoration: underline;
   background: transparent;
 }
 
 .timeline-entry-link.copied {
-  color: #aff5b4;
+  color: var(--tea-success-text);
 }
 
 .timeline-payload-collapsed {
-  border-top: 1px solid rgba(88, 166, 255, 0.18);
-  background: rgba(1, 4, 9, 0.65);
+  border-top: 1px solid color-mix(in srgb, var(--tea-info) 18%, transparent);
+  background: color-mix(in srgb, var(--tea-bg-deep) 65%, transparent);
 }
 
 .timeline-payload-toggle {
@@ -2386,13 +2248,13 @@ dl {
   gap: 0.8rem;
   cursor: pointer;
   padding: 0.72rem 0.85rem;
-  color: #8b949e;
+  color: var(--tea-muted);
   font-size: 0.78rem;
   list-style: none;
 }
 
 .timeline-payload-summary {
-  color: #6e7681;
+  color: var(--tea-muted-low);
   font-size: 0.74rem;
   text-align: right;
 }
@@ -2407,47 +2269,41 @@ dl {
   left: -1.1rem;
   width: 0.7rem;
   height: 0.7rem;
-  border: 2px solid #0d1117;
+  border: 2px solid var(--tea-bg);
   border-radius: 999px;
-  background: #58a6ff;
+  background: var(--tea-info);
 }
 
-.conversation-entry .comment-with-avatar,
-.timeline-event .comment-with-avatar {
+.conversation-entry .comment-with-avatar {
   grid-template-columns: 30px minmax(0, 1fr);
 }
 
 .conversation-entry.event .timeline-marker {
-  background: #79c0ff;
-}
-
-.timeline-event p {
-  padding: 0.85rem;
+  background: var(--tea-info-text);
 }
 
 .conversation-entry pre,
-.timeline-event pre,
 .run-card pre,
 .raw-details pre,
 .export-preview {
   max-height: 280px;
-  border-top: 1px solid #30363d;
+  border-top: 1px solid var(--tea-line);
   padding: 0.85rem;
   font-size: 0.8rem;
-  background: #010409;
+  background: var(--tea-bg-deep);
 }
 
 .event-payload {
-  border-top-color: rgba(88, 166, 255, 0.22);
-  background: rgba(1, 4, 9, 0.9);
+  border-top-color: color-mix(in srgb, var(--tea-info) 22%, transparent);
+  background: color-mix(in srgb, var(--tea-bg-deep) 90%, transparent);
 }
 
 .run-card {
   display: grid;
   gap: 0.35rem;
-  border: 1px solid #30363d;
+  border: 1px solid var(--tea-line);
   border-radius: 8px;
-  background: #0d1117;
+  background: var(--tea-bg);
 }
 
 .run-card > div {
@@ -2474,9 +2330,9 @@ dl {
 }
 
 .run-actions .run-action-stop.action-danger {
-  border-color: rgba(248, 81, 73, 0.72);
-  color: #ffa198;
-  background: rgba(248, 81, 73, 0.13);
+  border-color: color-mix(in srgb, var(--tea-danger) 72%, transparent);
+  color: var(--tea-danger-text);
+  background: color-mix(in srgb, var(--tea-danger) 13%, transparent);
 }
 
 .run-actions button:disabled {
@@ -2494,9 +2350,9 @@ dl {
 .export-download-actions button {
   padding: 0.42rem 0.62rem;
   font-size: 0.83rem;
-  border-color: rgba(56, 139, 253, 0.55);
-  color: #79c0ff;
-  background: rgba(56, 139, 253, 0.12);
+  border-color: color-mix(in srgb, var(--tea-info) 55%, transparent);
+  color: var(--tea-info-text);
+  background: color-mix(in srgb, var(--tea-info) 12%, transparent);
 }
 
 .export-download-actions button:disabled {
@@ -2506,7 +2362,7 @@ dl {
 
 .run-actions-note {
   padding: 0 0.85rem 0.75rem;
-  color: #6e7681;
+  color: var(--tea-muted-low);
   font-size: 0.72rem;
 }
 
@@ -2519,10 +2375,10 @@ dl {
 .plan-card {
   display: grid;
   gap: 0.7rem;
-  border: 1px solid #30363d;
+  border: 1px solid var(--tea-line);
   border-radius: 10px;
   padding: 0.9rem 1rem;
-  background: rgba(22, 27, 34, 0.55);
+  background: color-mix(in srgb, var(--tea-surface) 55%, transparent);
 }
 
 .analysis-card-header,
@@ -2537,7 +2393,7 @@ dl {
 .analysis-card-header h4,
 .plan-card-header h4 {
   margin: 0;
-  color: #f0f6fc;
+  color: var(--tea-text);
   font-size: 0.95rem;
 }
 
@@ -2551,7 +2407,7 @@ dl {
 .analysis-workflow,
 .plan-summary {
   margin: 0;
-  color: #c9d1d9;
+  color: var(--tea-text-soft);
   font-size: 0.86rem;
 }
 
@@ -2559,7 +2415,7 @@ dl {
   padding: 0.05rem 0.35rem;
   border-radius: 5px;
   font-size: 0.8rem;
-  background: rgba(110, 118, 129, 0.22);
+  background: color-mix(in srgb, var(--tea-muted) 22%, transparent);
 }
 
 .analysis-plan-facts {
@@ -2576,7 +2432,7 @@ dl {
 }
 
 .analysis-plan-facts dt {
-  color: #8b949e;
+  color: var(--tea-muted);
   font-size: 0.8rem;
 }
 
@@ -2586,18 +2442,9 @@ dl {
   gap: 0.3rem;
 }
 
-.analysis-plan-chip {
-  padding: 0.12rem 0.45rem;
-  border: 1px solid rgba(139, 148, 158, 0.3);
-  border-radius: 999px;
-  color: #c9d1d9;
-  font-size: 0.76rem;
-  background: rgba(22, 27, 34, 0.7);
-}
-
 .analysis-plan-empty-value {
   margin: 0;
-  color: #6e7681;
+  color: var(--tea-muted-low);
   font-size: 0.8rem;
   font-style: italic;
 }
@@ -2610,13 +2457,13 @@ dl {
 }
 
 .plan-step strong {
-  color: #f0f6fc;
+  color: var(--tea-text);
   font-size: 0.86rem;
 }
 
 .plan-step p {
   margin: 0.15rem 0 0;
-  color: #8b949e;
+  color: var(--tea-muted);
   font-size: 0.82rem;
 }
 
@@ -2627,107 +2474,79 @@ dl {
   min-width: 0;
 }
 
-.issue-stage-card {
-  border: 1px solid rgba(56, 139, 253, 0.34);
-  border-radius: 10px;
-  padding: 0.9rem;
-  background: linear-gradient(180deg, rgba(56, 139, 253, 0.12), rgba(13, 17, 23, 0.88));
-}
-
 .meta-routing {
-  border: 1px solid #30363d;
+  border: 1px solid var(--tea-line);
   border-radius: 8px;
   padding: 0.85rem;
-  background: rgba(22, 27, 34, 0.4);
+  background: color-mix(in srgb, var(--tea-surface) 40%, transparent);
 }
 
 .meta-section {
   display: grid;
   gap: 0.55rem;
-  border-bottom: 1px solid #30363d;
+  border-bottom: 1px solid var(--tea-line);
   padding-bottom: 1rem;
 }
 
 .meta-section h3 {
-  color: #f0f6fc;
+  color: var(--tea-text);
   font-size: 0.86rem;
-}
-
-.meta-highlight {
-  display: grid;
-  gap: 0.4rem;
-  border: 1px solid rgba(139, 148, 158, 0.18);
-  border-radius: 8px;
-  padding: 0.75rem;
-  background: rgba(22, 27, 34, 0.52);
-}
-
-.meta-highlight strong {
-  color: #f0f6fc;
-  font-size: 0.9rem;
-}
-
-.meta-highlight span {
-  color: #8b949e;
-  font-size: 0.81rem;
-  line-height: 1.45;
 }
 
 .issue-signal-panel {
   display: grid;
   gap: 0.45rem;
-  border: 1px solid rgba(88, 166, 255, 0.18);
+  border: 1px solid color-mix(in srgb, var(--tea-info) 18%, transparent);
   border-radius: 8px;
   padding: 0.75rem;
-  background: rgba(13, 17, 23, 0.58);
+  background: color-mix(in srgb, var(--tea-bg) 58%, transparent);
 }
 
 .issue-signal-panel p {
   margin: 0;
-  color: #8b949e;
+  color: var(--tea-muted);
   font-size: 0.81rem;
   line-height: 1.45;
 }
 
 .issue-signal-panel .issue-signal-reason {
   max-width: none;
-  color: #c9d1d9;
+  color: var(--tea-text-soft);
   font-size: 0.78rem;
 }
 
 .issue-action-hint-panel {
   display: grid;
   gap: 0.45rem;
-  border: 1px solid rgba(139, 148, 158, 0.2);
+  border: 1px solid color-mix(in srgb, var(--tea-muted) 20%, transparent);
   border-radius: 8px;
   padding: 0.75rem;
-  background: rgba(22, 27, 34, 0.5);
+  background: color-mix(in srgb, var(--tea-surface) 50%, transparent);
 }
 
 .issue-action-hint-panel p {
   margin: 0;
-  color: #8b949e;
+  color: var(--tea-muted);
   font-size: 0.81rem;
   line-height: 1.45;
 }
 
 .issue-action-hint-panel .issue-action-hint-cta {
   justify-self: start;
-  border-color: rgba(88, 166, 255, 0.46);
+  border-color: color-mix(in srgb, var(--tea-info) 46%, transparent);
   padding: 0.42rem 0.68rem;
-  color: #a5d6ff;
+  color: var(--tea-info-text);
   font-size: 0.78rem;
   font-weight: 800;
-  background: linear-gradient(135deg, rgba(56, 139, 253, 0.18), rgba(56, 139, 253, 0.08));
+  background: var(--tea-info-soft);
 }
 
 .issue-action-hint-cta:disabled {
-  color: #8b949e;
+  color: var(--tea-muted);
 }
 
 .label-stack,
-.workflow-actions,
-.export-actions {
+.workflow-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 0.45rem;
@@ -2741,35 +2560,34 @@ dl {
 .workflow-action-group {
   display: grid;
   gap: 0.45rem;
-  border: 1px solid rgba(139, 148, 158, 0.18);
+  border: 1px solid color-mix(in srgb, var(--tea-muted) 18%, transparent);
   border-radius: 8px;
   padding: 0.7rem;
-  background: rgba(22, 27, 34, 0.42);
+  background: color-mix(in srgb, var(--tea-surface) 42%, transparent);
 }
 
 .workflow-action-group h4 {
   margin: 0;
-  color: #c9d1d9;
+  color: var(--tea-text-soft);
   font-size: 0.78rem;
   font-weight: 700;
 }
 
-.workflow-actions button,
-.export-actions button {
+.workflow-actions button {
   padding: 0.44rem 0.62rem;
   font-size: 0.84rem;
 }
 
 .workflow-actions .action-primary {
-  border-color: rgba(46, 160, 67, 0.72);
-  color: #aff5b4;
-  background: rgba(46, 160, 67, 0.16);
+  border-color: color-mix(in srgb, var(--tea-success) 72%, transparent);
+  color: var(--tea-success-text);
+  background: color-mix(in srgb, var(--tea-success) 16%, transparent);
 }
 
 .workflow-actions .action-danger {
-  border-color: rgba(248, 81, 73, 0.72);
-  color: #ffa198;
-  background: rgba(248, 81, 73, 0.13);
+  border-color: color-mix(in srgb, var(--tea-danger) 72%, transparent);
+  color: var(--tea-danger-text);
+  background: color-mix(in srgb, var(--tea-danger) 13%, transparent);
 }
 
 .reject-reason-form {
@@ -2777,11 +2595,11 @@ dl {
   gap: 0.4rem;
   margin-top: 0.5rem;
   padding-top: 0.55rem;
-  border-top: 1px dashed rgba(139, 148, 158, 0.24);
+  border-top: 1px dashed color-mix(in srgb, var(--tea-muted) 24%, transparent);
 }
 
 .reject-reason-form label {
-  color: #8b949e;
+  color: var(--tea-muted);
   font-size: 0.74rem;
   font-weight: 600;
 }
@@ -2790,19 +2608,19 @@ dl {
   width: 100%;
   resize: vertical;
   padding: 0.45rem 0.55rem;
-  border: 1px solid #30363d;
+  border: 1px solid var(--tea-line);
   border-radius: 6px;
-  background: rgba(13, 17, 23, 0.6);
-  color: #c9d1d9;
+  background: color-mix(in srgb, var(--tea-bg) 60%, transparent);
+  color: var(--tea-text-soft);
   font-size: 0.82rem;
 }
 
 .reject-reason-form .action-danger {
   justify-self: start;
   padding: 0.4rem 0.7rem;
-  border-color: rgba(248, 81, 73, 0.72);
-  color: #ffa198;
-  background: rgba(248, 81, 73, 0.13);
+  border-color: color-mix(in srgb, var(--tea-danger) 72%, transparent);
+  color: var(--tea-danger-text);
+  background: color-mix(in srgb, var(--tea-danger) 13%, transparent);
 }
 
 .policy-editor {
@@ -2810,42 +2628,42 @@ dl {
   gap: 0.35rem;
   margin-top: 0.5rem;
   padding-top: 0.55rem;
-  border-top: 1px dashed rgba(139, 148, 158, 0.24);
+  border-top: 1px dashed color-mix(in srgb, var(--tea-muted) 24%, transparent);
 }
 
 .policy-editor label {
-  color: #8b949e;
+  color: var(--tea-muted);
   font-size: 0.74rem;
   font-weight: 600;
 }
 
 .policy-editor select {
   padding: 0.4rem 0.5rem;
-  border: 1px solid #30363d;
+  border: 1px solid var(--tea-line);
   border-radius: 6px;
-  background: rgba(13, 17, 23, 0.6);
-  color: #c9d1d9;
+  background: color-mix(in srgb, var(--tea-bg) 60%, transparent);
+  color: var(--tea-text-soft);
   font-size: 0.82rem;
 }
 
 .policy-editor small {
-  color: #6e7681;
+  color: var(--tea-muted-low);
   font-size: 0.72rem;
 }
 
 .milestone-progress {
   overflow: hidden;
   height: 0.55rem;
-  border: 1px solid #30363d;
+  border: 1px solid var(--tea-line);
   border-radius: 999px;
-  background: #010409;
+  background: var(--tea-bg-deep);
 }
 
 .milestone-progress span {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, #238636, #3fb950);
+  background: var(--tea-success);
 }
 
 .meta-list {
@@ -2860,7 +2678,7 @@ dl {
 }
 
 .meta-list dt {
-  color: #8b949e;
+  color: var(--tea-muted);
 }
 
 .meta-list dd {
@@ -2869,12 +2687,12 @@ dl {
 }
 
 .raw-details {
-  color: #dbe6f4;
+  color: var(--tea-text);
 }
 
 .raw-details summary {
   cursor: pointer;
-  color: #58a6ff;
+  color: var(--tea-info);
   font-weight: 700;
 }
 
@@ -2885,8 +2703,13 @@ dl {
 @media (max-width: 1180px) {
   .connection-strip,
   .issue-workspace,
-  .issue-body-layout {
+  .issue-body-layout,
+  .issue-titlebar {
     grid-template-columns: 1fr;
+  }
+
+  .issue-title-secondary {
+    justify-items: stretch;
   }
 
   .issue-query-bar,
@@ -2897,7 +2720,7 @@ dl {
 
   .issue-index {
     border-right: 0;
-    border-bottom: 1px solid #30363d;
+    border-bottom: 1px solid var(--tea-line);
   }
 }
 
@@ -2905,10 +2728,7 @@ dl {
    Keeps titles, labels, counts, values, and empty-state guidance; hides the
    redundant descriptive sentences that crowd each section. */
 .repo-identity > p,
-.new-issue-header p,
-.section-focus-card > header p,
-.section-focus-hint,
-.issue-title-subline {
+.new-issue-header p {
   display: none;
 }
 
@@ -2919,17 +2739,64 @@ dl {
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
-  color: #8b949e;
+  color: var(--tea-muted);
   font-size: 0.8rem;
 }
 .repo-connection-inline .state-dot {
   width: 8px;
   height: 8px;
   border-radius: 999px;
-  background: #f0883e;
+  background: var(--tea-accent);
 }
 .repo-connection-inline .state-dot.ok {
-  background: #3fb950;
+  background: var(--tea-success);
+}
+
+.execution-provider-badge {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  min-height: 1.35rem;
+  padding: 0.1rem 0.45rem;
+  border: 1px solid var(--tea-muted-low);
+  border-radius: 4px;
+  color: var(--tea-text-soft);
+  background: var(--tea-control);
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.execution-provider-badge.loom {
+  border-color: color-mix(in srgb, var(--tea-success) 70%, transparent);
+  color: var(--tea-success-text);
+  background: color-mix(in srgb, var(--tea-success) 14%, transparent);
+}
+
+.execution-provider-badge.mock {
+  border-color: color-mix(in srgb, var(--tea-accent) 72%, transparent);
+  color: var(--tea-accent);
+  background: color-mix(in srgb, var(--tea-accent) 14%, transparent);
+}
+
+.runtime-error-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.45rem 0.75rem;
+  padding: 0.7rem 1.5rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--tea-danger) 55%, transparent);
+  color: var(--tea-danger-text);
+  background: color-mix(in srgb, var(--tea-danger) 12%, transparent);
+}
+
+.runtime-error-banner span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--tea-danger-text);
+}
+
+.locale-toggle {
+  min-width: 2.75rem;
 }
 
 /* Preset queue cards -> compact horizontal pills (number + label, no description) */
@@ -3000,13 +2867,13 @@ dl {
   align-items: center;
   gap: 0.35rem;
   padding: 0 0.9rem;
-  border-left: 1px solid #30363d !important;
-  color: #8b949e;
+  border-left: 1px solid var(--tea-line) !important;
+  color: var(--tea-muted);
   font-weight: 700;
 }
 .issue-advanced-filter-toggle.active {
-  color: #f0f6fc;
-  background: #30363d;
+  color: var(--tea-text);
+  background: var(--tea-control-hover);
 }
 .issue-advanced-filter-toggle span {
   display: inline-flex;
@@ -3017,8 +2884,105 @@ dl {
   margin-left: 0;
   padding: 0 0.3rem;
   border-radius: 999px;
-  color: #f0f6fc;
+  color: var(--tea-text);
   font-size: 0.72rem;
   font-weight: 800;
-  background: #1f6feb;
+  background: var(--tea-info);
+}
+
+@media (max-width: 640px) {
+  .repo-header {
+    align-items: flex-start;
+    flex-direction: column;
+    padding: 0.85rem 1rem;
+  }
+
+  .repo-identity,
+  .repo-actions,
+  .refresh-control {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .repo-tabs {
+    max-width: 100vw;
+    overflow-x: auto;
+    padding: 0 0.5rem;
+  }
+
+  .repo-tabs button {
+    flex: 0 0 auto;
+    padding: 0.7rem 0.6rem;
+  }
+
+  .connection-strip,
+  .activity-log,
+  .runtime-error-banner {
+    padding-right: 1rem;
+    padding-left: 1rem;
+  }
+
+  .issue-toolbar {
+    padding: 0.75rem;
+  }
+
+  .issue-query-bar .issue-search {
+    flex-basis: 100%;
+    min-width: 0;
+  }
+
+  .issue-query-bar > button,
+  .issue-triage-filter-button {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .issue-body-layout {
+    padding: 1rem 1rem 1.5rem;
+  }
+
+  .conversation-header,
+  .conversation-stream-header {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 0.65rem;
+  }
+
+  .conversation-header > span {
+    align-self: flex-start;
+  }
+
+  .conversation-stats {
+    justify-content: flex-start;
+  }
+
+  .conversation-filter-tabs {
+    display: flex;
+    width: 100%;
+    max-width: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .conversation-filter-tabs button {
+    flex: 1 0 auto;
+  }
+
+  .issue-comment-header {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 0.65rem;
+  }
+
+  .conversation-entry-title {
+    flex: 1 1 10rem;
+    max-width: 100%;
+  }
+
+  .conversation-entry-actions {
+    flex: 1 1 100%;
+    justify-content: flex-start;
+    width: 100%;
+    min-width: 0;
+  }
 }

@@ -11,3 +11,4 @@ description = "Tea configuration ownership and local config contracts"
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+url.workspace = true

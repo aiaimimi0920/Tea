@@ -91,6 +91,7 @@ export interface TeaSnapshot {
   status: JsonObject | null;
   configuration: JsonObject | null;
   tickets: TeaTicket[];
+  ticketsAvailable: boolean;
   error?: string;
 }
 
@@ -113,6 +114,15 @@ export interface TeaClientOptions {
   authToken?: string;
 }
 
+const PAGED_COLLECTION_LIMIT = 200;
+const MAX_PAGED_COLLECTION_PAGES = 1_000;
+const POLL_TIMEOUT_MS = 15_000;
+const inFlightTicketBundleRequests = new Map<string, Promise<TeaTicketBundle>>();
+
+type DecodedCollectionPage<T> =
+  | { kind: "legacy"; items: T[] }
+  | { kind: "paged"; items: T[]; nextCursor: string | null };
+
 export async function resolveRuntimeConfig(): Promise<TeaRuntimeConfig> {
   return invoke<TeaRuntimeConfig>("resolve_tea_runtime_config");
 }
@@ -126,6 +136,7 @@ async function requestJson<T>(
   path: string,
   body?: unknown,
   options?: TeaClientOptions,
+  extras?: { idempotencyKey?: string; timeoutMs?: number },
 ): Promise<T> {
   return invoke<T>("tea_request", {
     method,
@@ -133,28 +144,142 @@ async function requestJson<T>(
     body: body ?? null,
     baseUrl: options?.serverUrl ?? null,
     authToken: options?.authToken ?? null,
+    ...(extras?.idempotencyKey ? { idempotencyKey: extras.idempotencyKey } : {}),
+    ...(extras?.timeoutMs !== undefined ? { timeoutMs: extras.timeoutMs } : {}),
   });
 }
 
+function decodeCollectionPage<T>(value: unknown, legacyEnvelope?: string): DecodedCollectionPage<T> {
+  if (Array.isArray(value)) return { items: value as T[], kind: "legacy" };
+  if (typeof value !== "object" || value === null) {
+    throw new Error("paged collection response must be an array or object envelope");
+  }
+  const object = value as Record<string, unknown>;
+  if ("items" in object) {
+    if (!Array.isArray(object.items)) {
+      throw new Error("paged collection response field 'items' must be an array");
+    }
+    const cursor = object.next_cursor;
+    if (cursor !== null && cursor !== undefined && (typeof cursor !== "string" || cursor.length === 0)) {
+      throw new Error("paged collection next_cursor must be a non-empty string or null");
+    }
+    return {
+      items: object.items as T[],
+      kind: "paged",
+      nextCursor: typeof cursor === "string" ? cursor : null,
+    };
+  }
+  if (legacyEnvelope && Array.isArray(object[legacyEnvelope])) {
+    return { items: object[legacyEnvelope] as T[], kind: "legacy" };
+  }
+  throw new Error("paged collection response is missing an items array");
+}
+
+async function readAllCollectionPages<T>(
+  path: string,
+  identityField: string,
+  options?: TeaClientOptions,
+  legacyEnvelope?: string,
+  timeoutMs?: number,
+): Promise<T[]> {
+  const items: T[] = [];
+  const identities = new Map<string, string>();
+  const seenCursors = new Set<string>();
+  let cursor: string | null = null;
+
+  for (let pageNumber = 1; pageNumber <= MAX_PAGED_COLLECTION_PAGES; pageNumber += 1) {
+    const pagePath: string = `${path}?limit=${PAGED_COLLECTION_LIMIT}${
+      cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""
+    }`;
+    const page: DecodedCollectionPage<T> = decodeCollectionPage<T>(
+      await requestJson<unknown>("GET", pagePath, undefined, options, { timeoutMs }),
+      legacyEnvelope,
+    );
+    if (page.kind === "paged" && page.items.length > PAGED_COLLECTION_LIMIT) {
+      throw new Error(
+        `paged collection page ${pageNumber} exceeded the requested ${PAGED_COLLECTION_LIMIT} items`,
+      );
+    }
+
+    for (const item of page.items) {
+      if (typeof item !== "object" || item === null) {
+        throw new Error("paged collection item must be an object");
+      }
+      const identity = (item as Record<string, unknown>)[identityField];
+      if (typeof identity !== "string" || identity.length === 0) {
+        throw new Error(`paged collection item is missing ${identityField}`);
+      }
+      const serialized = JSON.stringify(item);
+      const previous = identities.get(identity);
+      if (previous !== undefined) {
+        if (previous !== serialized) {
+          throw new Error(`paged collection returned conflicting records for ${identity}`);
+        }
+        continue;
+      }
+      identities.set(identity, serialized);
+      items.push(item);
+    }
+
+    if (page.kind === "legacy" || page.nextCursor === null) return items;
+    if (page.items.length === 0) {
+      throw new Error(`paged collection page ${pageNumber} was empty but returned a cursor`);
+    }
+    if (seenCursors.has(page.nextCursor)) {
+      throw new Error(`paged collection repeated cursor ${page.nextCursor}`);
+    }
+    seenCursors.add(page.nextCursor);
+    cursor = page.nextCursor;
+  }
+
+  throw new Error(
+    `paged collection exceeded ${MAX_PAGED_COLLECTION_PAGES} pages; refusing a partial result`,
+  );
+}
+
 export async function readSnapshot(options?: TeaClientOptions): Promise<TeaSnapshot> {
-  const [health, status, configuration, tickets] = await Promise.all([
-    requestJson<JsonObject>("GET", "/health", undefined, options).catch(() => null),
-    requestJson<JsonObject>("GET", "/v1/status", undefined, options).catch(() => null),
-    requestJson<JsonObject>("GET", "/v1/configuration", undefined, options).catch(() => null),
-    requestJson<TeaTicket[]>("GET", "/v1/tickets", undefined, options).catch(() => []),
+  const poll = { timeoutMs: POLL_TIMEOUT_MS };
+  const [healthResult, statusResult, configurationResult, ticketsResult] = await Promise.allSettled([
+    requestJson<JsonObject>("GET", "/health", undefined, options, poll),
+    requestJson<JsonObject>("GET", "/v1/status", undefined, options, poll),
+    requestJson<JsonObject>("GET", "/v1/configuration", undefined, options, poll),
+    readAllCollectionPages<TeaTicket>("/v1/tickets", "id", options, "tickets", POLL_TIMEOUT_MS),
   ]);
+  const errors: string[] = [];
+  const settledValue = <T>(
+    label: string,
+    result: PromiseSettledResult<T>,
+    fallback: T,
+  ): T => {
+    if (result.status === "fulfilled") return result.value;
+    const reason = result.reason instanceof Error ? result.reason.message : String(result.reason);
+    errors.push(`${label}: ${reason}`);
+    return fallback;
+  };
+
+  const health = settledValue<JsonObject | null>("health", healthResult, null);
+  const status = settledValue<JsonObject | null>("status", statusResult, null);
+  const configuration = settledValue<JsonObject | null>(
+    "configuration",
+    configurationResult,
+    null,
+  );
+  const tickets = settledValue<TeaTicket[]>("tickets", ticketsResult, []);
 
   return {
     health,
     status,
     configuration,
     tickets,
+    ticketsAvailable: ticketsResult.status === "fulfilled",
+    error: errors.length > 0 ? errors.join("; ") : undefined,
   };
 }
 
 export async function createTicket(
   input: CreateTicketInput,
   options?: TeaClientOptions,
+  idempotencyKey?: string,
 ): Promise<TeaTicket> {
   const body: JsonObject = {
     title: input.title,
@@ -169,7 +294,7 @@ export async function createTicket(
   if (input.labels && input.labels.length > 0) {
     body.labels = input.labels;
   }
-  return requestJson<TeaTicket>("POST", "/v1/tickets", body, options);
+  return requestJson<TeaTicket>("POST", "/v1/tickets", body, options, { idempotencyKey });
 }
 
 export async function getTicket(id: string, options?: TeaClientOptions): Promise<TeaTicket> {
@@ -339,10 +464,10 @@ export async function retryRun(runId: string, options?: TeaClientOptions): Promi
 }
 
 export async function updateConfiguration(
-  config: TeaLocalConfig,
+  config: Partial<TeaLocalConfig>,
   options?: TeaClientOptions,
 ): Promise<JsonObject> {
-  return requestJson<JsonObject>("PUT", "/v1/configuration", config, options);
+  return requestJson<JsonObject>("PATCH", "/v1/configuration", config, options);
 }
 
 export async function exportTicket(
@@ -371,7 +496,13 @@ export interface TeaIssueMetric {
  * Replaces the previous per-ticket fan-out (comments+runs+events for every ticket).
  */
 export async function getIssueMetrics(options?: TeaClientOptions): Promise<TeaIssueMetric[]> {
-  return requestJson<TeaIssueMetric[]>("GET", "/v1/tickets/metrics", undefined, options);
+  return readAllCollectionPages<TeaIssueMetric>(
+    "/v1/tickets/metrics",
+    "ticket_id",
+    options,
+    undefined,
+    POLL_TIMEOUT_MS,
+  );
 }
 
 export interface TeaTicketBundle {
@@ -391,10 +522,26 @@ export async function getTicketBundle(
   id: string,
   options?: TeaClientOptions,
 ): Promise<TeaTicketBundle> {
-  return requestJson<TeaTicketBundle>(
+  // Selection changes and snapshot refreshes can ask for the same detail at
+  // the same time. Share only the in-flight request; completed responses are
+  // never cached, so every later refresh still observes current daemon state.
+  const requestKey = JSON.stringify([options?.serverUrl ?? null, options?.authToken ?? null, id]);
+  const existing = inFlightTicketBundleRequests.get(requestKey);
+  if (existing) return existing;
+
+  const request = requestJson<TeaTicketBundle>(
     "GET",
     `/v1/tickets/${encodeURIComponent(id)}/bundle`,
     undefined,
     options,
+    { timeoutMs: POLL_TIMEOUT_MS },
   );
+  inFlightTicketBundleRequests.set(requestKey, request);
+  try {
+    return await request;
+  } finally {
+    if (inFlightTicketBundleRequests.get(requestKey) === request) {
+      inFlightTicketBundleRequests.delete(requestKey);
+    }
+  }
 }

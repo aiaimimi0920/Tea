@@ -9,11 +9,12 @@
 //! The core here is deliberately pure and I/O-free: it defines the tool
 //! catalog, translates an MCP `tools/call` into a [`TeaAction`] (an HTTP method
 //! + path + optional JSON body against the Tea daemon), and builds JSON-RPC
-//! responses. The actual HTTP execution and stdio loop live in the
-//! `tea-mcp` binary so the mapping stays trivially testable.
+//!   responses. The actual HTTP execution and stdio loop live in the
+//!   `tea-mcp` binary so the mapping stays trivially testable.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tea_http_read::percent_encode_component;
 use thiserror::Error;
 
 /// Protocol version this server advertises during `initialize`.
@@ -38,6 +39,8 @@ pub enum McpError {
     },
     #[error("tool arguments must be a JSON object")]
     ArgumentsNotObject,
+    #[error("unknown argument for {tool}: {name}")]
+    UnknownArgument { tool: String, name: String },
 }
 
 /// HTTP method for a resolved Tea action.
@@ -67,6 +70,7 @@ pub struct TeaAction {
     pub method: HttpMethod,
     pub path: String,
     pub body: Option<Value>,
+    pub idempotency_key: Option<String>,
     /// When true, the daemon returns text/markdown rather than JSON; the server
     /// should surface the raw text instead of pretty-printing JSON.
     pub expects_text: bool,
@@ -78,6 +82,7 @@ impl TeaAction {
             method: HttpMethod::Get,
             path: path.into(),
             body: None,
+            idempotency_key: None,
             expects_text: false,
         }
     }
@@ -87,6 +92,7 @@ impl TeaAction {
             method: HttpMethod::Get,
             path: path.into(),
             body: None,
+            idempotency_key: None,
             expects_text: true,
         }
     }
@@ -96,6 +102,7 @@ impl TeaAction {
             method: HttpMethod::Post,
             path: path.into(),
             body: Some(body),
+            idempotency_key: None,
             expects_text: false,
         }
     }
@@ -105,8 +112,14 @@ impl TeaAction {
             method: HttpMethod::Patch,
             path: path.into(),
             body: Some(body),
+            idempotency_key: None,
             expects_text: false,
         }
+    }
+
+    fn with_idempotency_key(mut self, idempotency_key: Option<String>) -> Self {
+        self.idempotency_key = idempotency_key;
+        self
     }
 }
 
@@ -147,11 +160,13 @@ pub fn tool_catalog() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "tea_list_tickets",
-            description: "List Tea work-order tickets, optionally filtered by status or source.",
+            description: "List Tea work-order tickets, optionally filtered or paginated. Supplying limit/cursor returns an items/next_cursor envelope.",
             input_schema: object_schema(
                 json!({
                     "status": { "type": "string", "description": "Optional status filter (e.g. open, running, closed)." },
                     "source": { "type": "string", "description": "Optional source filter (human, hook, api, system)." },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 200, "description": "Optional page size. Use with next_cursor to continue." },
+                    "cursor": { "type": "string", "description": "Opaque continuation cursor from a previous paged response." },
                 }),
                 &[],
             ),
@@ -175,6 +190,7 @@ pub fn tool_catalog() -> Vec<ToolSpec> {
                         "description": "Optional initial operator labels.",
                     },
                     "approval_policy": { "type": "string", "description": "Optional approval policy override." },
+                    "idempotency_key": { "type": "string", "description": "Optional stable key for retrying the same logical create." },
                 }),
                 &["title", "description"],
             ),
@@ -321,10 +337,67 @@ fn require_str(
     }
 }
 
-fn optional_str(map: &serde_json::Map<String, Value>, name: &'static str) -> Option<String> {
+fn optional_str(
+    map: &serde_json::Map<String, Value>,
+    name: &'static str,
+) -> Result<Option<String>, McpError> {
     match map.get(name) {
-        Some(Value::String(value)) if !value.trim().is_empty() => Some(value.trim().to_string()),
-        _ => None,
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) if !value.trim().is_empty() => {
+            Ok(Some(value.trim().to_string()))
+        }
+        Some(Value::String(_)) => Ok(None),
+        Some(_) => Err(McpError::InvalidArgument {
+            name,
+            expected: "string",
+        }),
+    }
+}
+
+fn optional_raw_str(
+    map: &serde_json::Map<String, Value>,
+    name: &'static str,
+) -> Result<Option<String>, McpError> {
+    match map.get(name) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) => Ok(Some(value.clone())),
+        Some(_) => Err(McpError::InvalidArgument {
+            name,
+            expected: "string",
+        }),
+    }
+}
+
+fn optional_query_str(
+    map: &serde_json::Map<String, Value>,
+    name: &'static str,
+) -> Result<Option<String>, McpError> {
+    match map.get(name) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) if !value.trim().is_empty() => {
+            Ok(Some(value.trim().to_string()))
+        }
+        Some(_) => Err(McpError::InvalidArgument {
+            name,
+            expected: "non-empty string",
+        }),
+    }
+}
+
+fn optional_page_limit(map: &serde_json::Map<String, Value>) -> Result<Option<u64>, McpError> {
+    match map.get("limit") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Number(value)) => match value.as_u64() {
+            Some(limit @ 1..=200) => Ok(Some(limit)),
+            _ => Err(McpError::InvalidArgument {
+                name: "limit",
+                expected: "integer between 1 and 200",
+            }),
+        },
+        Some(_) => Err(McpError::InvalidArgument {
+            name: "limit",
+            expected: "integer between 1 and 200",
+        }),
     }
 }
 
@@ -362,21 +435,62 @@ fn optional_labels(
 }
 
 fn encode_ticket_path(ticket_id: &str, suffix: &str) -> String {
-    // Ticket ids are UUIDs from the daemon; guard against odd input by
-    // percent-encoding characters that would break the path. Keep it minimal
-    // and dependency-free since UUIDs need no encoding in practice.
-    let encoded: String = ticket_id
-        .chars()
-        .flat_map(|c| match c {
-            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => vec![c],
-            other => format!("%{:02X}", other as u32).chars().collect(),
-        })
-        .collect();
+    let encoded = percent_encode_component(ticket_id);
     format!("/v1/tickets/{encoded}{suffix}")
+}
+
+fn allowed_argument_names(name: &str) -> Option<&'static [&'static str]> {
+    match name {
+        "tea_status" => Some(&[]),
+        "tea_list_tickets" => Some(&["status", "source", "limit", "cursor"]),
+        "tea_get_ticket" | "tea_list_events" | "tea_list_comments" => Some(&["ticket_id"]),
+        "tea_create_ticket" => Some(&[
+            "title",
+            "description",
+            "priority",
+            "labels",
+            "approval_policy",
+            "idempotency_key",
+        ]),
+        "tea_edit_ticket" => Some(&["ticket_id", "title", "description", "priority", "labels"]),
+        "tea_comment_ticket" => Some(&["ticket_id", "body"]),
+        "tea_analyze_ticket"
+        | "tea_decompose_ticket"
+        | "tea_plan_ticket"
+        | "tea_approve_ticket"
+        | "tea_run_ticket"
+        | "tea_accept_ticket"
+        | "tea_close_ticket"
+        | "tea_cancel_ticket" => Some(&["ticket_id"]),
+        "tea_reject_ticket" => Some(&["ticket_id", "reason"]),
+        "tea_export_ticket" => Some(&["ticket_id", "format"]),
+        _ => None,
+    }
+}
+
+fn validate_argument_names(name: &str, arguments: &Value) -> Result<(), McpError> {
+    let allowed =
+        allowed_argument_names(name).ok_or_else(|| McpError::UnknownTool(name.to_string()))?;
+    let map = match arguments {
+        Value::Null => return Ok(()),
+        Value::Object(map) => map,
+        _ => return Err(McpError::ArgumentsNotObject),
+    };
+    if let Some(argument) = map
+        .keys()
+        .find(|argument| !allowed.contains(&argument.as_str()))
+    {
+        return Err(McpError::UnknownArgument {
+            tool: name.to_string(),
+            name: argument.clone(),
+        });
+    }
+    Ok(())
 }
 
 /// Translate an MCP `tools/call` (tool name + arguments) into a [`TeaAction`].
 pub fn resolve_tool_call(name: &str, arguments: &Value) -> Result<TeaAction, McpError> {
+    validate_argument_names(name, arguments)?;
     match name {
         "tea_status" => Ok(TeaAction::get("/v1/status")),
         "tea_list_tickets" => {
@@ -387,11 +501,17 @@ pub fn resolve_tool_call(name: &str, arguments: &Value) -> Result<TeaAction, Mcp
                 _ => return Err(McpError::ArgumentsNotObject),
             };
             let mut query = Vec::new();
-            if let Some(status) = optional_str(&map, "status") {
-                query.push(format!("status={status}"));
+            if let Some(status) = optional_query_str(&map, "status")? {
+                query.push(format!("status={}", percent_encode_component(&status)));
             }
-            if let Some(source) = optional_str(&map, "source") {
-                query.push(format!("source={source}"));
+            if let Some(source) = optional_query_str(&map, "source")? {
+                query.push(format!("source={}", percent_encode_component(&source)));
+            }
+            if let Some(limit) = optional_page_limit(&map)? {
+                query.push(format!("limit={limit}"));
+            }
+            if let Some(cursor) = optional_query_str(&map, "cursor")? {
+                query.push(format!("cursor={}", percent_encode_component(&cursor)));
             }
             let path = if query.is_empty() {
                 "/v1/tickets".to_string()
@@ -411,28 +531,29 @@ pub fn resolve_tool_call(name: &str, arguments: &Value) -> Result<TeaAction, Mcp
             let description = require_str(map, "description")?;
             let mut body = json!({ "title": title, "description": description });
             let object = body.as_object_mut().expect("create body is object");
-            if let Some(priority) = optional_str(map, "priority") {
+            if let Some(priority) = optional_str(map, "priority")? {
                 object.insert("priority".to_string(), json!(priority));
             }
             if let Some(labels) = optional_labels(map, "labels")? {
                 object.insert("labels".to_string(), json!(labels));
             }
-            if let Some(policy) = optional_str(map, "approval_policy") {
+            if let Some(policy) = optional_str(map, "approval_policy")? {
                 object.insert("approval_policy".to_string(), json!(policy));
             }
-            Ok(TeaAction::post("/v1/tickets", body))
+            let idempotency_key = optional_str(map, "idempotency_key")?;
+            Ok(TeaAction::post("/v1/tickets", body).with_idempotency_key(idempotency_key))
         }
         "tea_edit_ticket" => {
             let map = require_object(arguments)?;
             let ticket_id = require_str(map, "ticket_id")?;
             let mut body = serde_json::Map::new();
-            if let Some(title) = optional_str(map, "title") {
+            if let Some(title) = optional_str(map, "title")? {
                 body.insert("title".to_string(), json!(title));
             }
-            if let Some(description) = map.get("description").and_then(Value::as_str) {
+            if let Some(description) = optional_raw_str(map, "description")? {
                 body.insert("description".to_string(), json!(description));
             }
-            if let Some(priority) = optional_str(map, "priority") {
+            if let Some(priority) = optional_str(map, "priority")? {
                 body.insert("priority".to_string(), json!(priority));
             }
             if let Some(labels) = optional_labels(map, "labels")? {
@@ -482,16 +603,20 @@ pub fn resolve_tool_call(name: &str, arguments: &Value) -> Result<TeaAction, Mcp
         "tea_export_ticket" => {
             let map = require_object(arguments)?;
             let ticket_id = require_str(map, "ticket_id")?;
-            let format = optional_str(map, "format").unwrap_or_else(|| "json".to_string());
+            let format = optional_str(map, "format")?.unwrap_or_else(|| "json".to_string());
             match format.as_str() {
-                "markdown" | "md" => Ok(TeaAction::get_text(encode_ticket_path(
+                "markdown" => Ok(TeaAction::get_text(encode_ticket_path(
                     &ticket_id,
                     "/export/markdown",
                 ))),
-                _ => Ok(TeaAction::get(encode_ticket_path(
+                "json" => Ok(TeaAction::get(encode_ticket_path(
                     &ticket_id,
                     "/export/json",
                 ))),
+                _ => Err(McpError::InvalidArgument {
+                    name: "format",
+                    expected: "json or markdown",
+                }),
             }
         }
         other => Err(McpError::UnknownTool(other.to_string())),
@@ -600,6 +725,7 @@ mod tests {
                 "priority": "high",
                 "labels": ["area:auth", "  ", "needs-triage"],
                 "approval_policy": "plan_only",
+                "idempotency_key": "mcp-create-1",
             }),
         )
         .unwrap();
@@ -609,6 +735,8 @@ mod tests {
         assert_eq!(body["title"], "Smoke");
         assert_eq!(body["priority"], "high");
         assert_eq!(body["approval_policy"], "plan_only");
+        assert_eq!(action.idempotency_key.as_deref(), Some("mcp-create-1"));
+        assert!(body.get("idempotency_key").is_none());
         // Blank labels are dropped.
         assert_eq!(body["labels"], json!(["area:auth", "needs-triage"]));
     }
@@ -652,6 +780,70 @@ mod tests {
     }
 
     #[test]
+    fn optional_string_arguments_reject_wrong_json_types() {
+        assert_eq!(
+            resolve_tool_call(
+                "tea_edit_ticket",
+                &json!({ "ticket_id": "t-1", "description": 123 }),
+            ),
+            Err(McpError::InvalidArgument {
+                name: "description",
+                expected: "string",
+            })
+        );
+
+        for (tool, arguments) in [
+            (
+                "tea_create_ticket",
+                json!({
+                    "title": "Smoke",
+                    "description": "Create a safe plan only.",
+                    "priority": false
+                }),
+            ),
+            (
+                "tea_edit_ticket",
+                json!({ "ticket_id": "t-1", "title": ["not", "a", "string"] }),
+            ),
+            (
+                "tea_export_ticket",
+                json!({ "ticket_id": "t-1", "format": 1 }),
+            ),
+        ] {
+            assert!(resolve_tool_call(tool, &arguments).is_err(), "tool={tool}");
+        }
+    }
+
+    #[test]
+    fn runtime_rejects_arguments_forbidden_by_the_tool_schema() {
+        assert_eq!(
+            resolve_tool_call(
+                "tea_create_ticket",
+                &json!({
+                    "title": "Smoke",
+                    "description": "Create a safe plan.",
+                    "descrption": "misspelled"
+                }),
+            ),
+            Err(McpError::UnknownArgument {
+                tool: "tea_create_ticket".to_string(),
+                name: "descrption".to_string(),
+            })
+        );
+        assert_eq!(
+            resolve_tool_call("tea_status", &json!({ "unexpected": true })),
+            Err(McpError::UnknownArgument {
+                tool: "tea_status".to_string(),
+                name: "unexpected".to_string(),
+            })
+        );
+        assert_eq!(
+            resolve_tool_call("tea_status", &json!(42)),
+            Err(McpError::ArgumentsNotObject)
+        );
+    }
+
+    #[test]
     fn list_tickets_builds_query_from_filters() {
         let action = resolve_tool_call("tea_list_tickets", &json!({ "status": "open" })).unwrap();
         assert_eq!(action.path, "/v1/tickets?status=open");
@@ -663,8 +855,40 @@ mod tests {
         .unwrap();
         assert_eq!(action.path, "/v1/tickets?status=running&source=hook");
 
+        let action = resolve_tool_call(
+            "tea_list_tickets",
+            &json!({ "status": "needs review", "source": "hook&api" }),
+        )
+        .unwrap();
+        assert_eq!(
+            action.path,
+            "/v1/tickets?status=needs%20review&source=hook%26api"
+        );
+
+        let action = resolve_tool_call(
+            "tea_list_tickets",
+            &json!({
+                "status": "open",
+                "limit": 25,
+                "cursor": "v1-000000000000000a-open-0"
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            action.path,
+            "/v1/tickets?status=open&limit=25&cursor=v1-000000000000000a-open-0"
+        );
+
         let action = resolve_tool_call("tea_list_tickets", &json!({})).unwrap();
         assert_eq!(action.path, "/v1/tickets");
+
+        for invalid in [
+            json!({"limit":0}),
+            json!({"limit":201}),
+            json!({"limit":"25"}),
+        ] {
+            assert!(resolve_tool_call("tea_list_tickets", &invalid).is_err());
+        }
     }
 
     #[test]
@@ -716,6 +940,14 @@ mod tests {
         .unwrap();
         assert_eq!(action.path, "/v1/tickets/t-1/export/markdown");
         assert!(action.expects_text);
+
+        assert!(matches!(
+            resolve_tool_call(
+                "tea_export_ticket",
+                &json!({ "ticket_id": "t-1", "format": "xml" })
+            ),
+            Err(McpError::InvalidArgument { name: "format", .. })
+        ));
     }
 
     #[test]
@@ -730,6 +962,10 @@ mod tests {
     fn ticket_id_with_special_chars_is_encoded() {
         let action = resolve_tool_call("tea_get_ticket", &json!({ "ticket_id": "a/b c" })).unwrap();
         assert_eq!(action.path, "/v1/tickets/a%2Fb%20c");
+
+        let action =
+            resolve_tool_call("tea_get_ticket", &json!({ "ticket_id": "中文/é" })).unwrap();
+        assert_eq!(action.path, "/v1/tickets/%E4%B8%AD%E6%96%87%2F%C3%A9");
     }
 
     #[test]

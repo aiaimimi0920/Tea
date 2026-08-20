@@ -1,0 +1,21 @@
+[package]
+name = "tea_http_read"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared bounded HTTP response readers, error-body previews, and percent-encoding for Tea binaries"
+
+[features]
+default = ["http"]
+# Bounded reqwest response readers. Off by default only for lean consumers
+# (e.g. tea_mcp) that just need the pure-string helpers.
+http = ["dep:reqwest", "dep:thiserror"]
+
+[dependencies]
+reqwest = { workspace = true, optional = true }
+thiserror = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio.workspace = true

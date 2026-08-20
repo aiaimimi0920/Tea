@@ -1,0 +1,9 @@
+[package]
+name = "tea_startup_lock"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Cross-process startup lock used by the Tea desktop launcher"
+

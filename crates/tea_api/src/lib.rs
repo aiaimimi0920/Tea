@@ -1,11 +1,15 @@
 #![forbid(unsafe_code)]
 
+mod settings_page;
+
+use settings_page::render_settings_page;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use axum::{
-    extract::{Path, State},
+    extract::{DefaultBodyLimit, Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
@@ -13,31 +17,62 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use tea_audit::{export_json, render_export_markdown};
 use tea_brain::{
     BrainError, DecomposeContext, DecomposeTicketProposal, DecomposeTicketRequest, TeaBrainProvider,
 };
 use tea_config::{
-    encode_local_config, ConfigurationDetails, ConfigurationOwner, ConfigurationOwnership,
-    ConfigurationSource, TeaConfiguration,
+    read_local_config_file, update_local_config_atomic, write_local_config_atomic, ConfigError,
+    ConfigurationDetails, ConfigurationOwner, ConfigurationOwnership, ConfigurationSource,
+    TeaConfiguration,
 };
 use tea_core::{
-    ActorRef, ApprovalPolicy, RunId, Ticket, TicketCreateOptions, TicketEdits, TicketId,
-    TicketSource, TicketStatus,
+    ActorRef, ApprovalPolicy, Plan, Run, RunId, RunStatus, Ticket, TicketAnalysis, TicketComment,
+    TicketCreateOptions, TicketEdits, TicketEvent, TicketId, TicketSource, TicketStatus,
 };
 use tea_hook::{normalize_hook_intake, HookIntakeRequest};
 use tea_loom::LoomClient;
-use tea_policy::{evaluate_close, evaluate_run, PolicyDecision, PolicyInput};
-use tea_store::{InMemoryTicketStore, StoreError, TicketStore};
+use tea_policy::{
+    evaluate_close, evaluate_run, weakens_approval_policy, PolicyDecision, PolicyInput,
+};
+use tea_store::{
+    IdempotencyRequest, InMemoryTicketStore, StoreError, TicketBundle, TicketPageRequest,
+    TicketStore, MAX_TICKET_PAGE_SIZE,
+};
+
+const MAX_HTTP_JSON_REQUEST_BYTES: usize = 2 * 1024 * 1024;
+const MAX_TICKET_TITLE_BYTES: usize = 1024;
+const MAX_TICKET_DESCRIPTION_BYTES: usize = 512 * 1024;
+const MAX_TICKET_PRIORITY_BYTES: usize = 128;
+const MAX_TICKET_LABELS: usize = 64;
+const MAX_TICKET_LABEL_BYTES: usize = 256;
+const MAX_COMMENT_BODY_BYTES: usize = 256 * 1024;
+const MAX_REJECTION_REASON_BYTES: usize = 64 * 1024;
+const MAX_HOOK_SOURCE_BYTES: usize = 256;
+const MAX_HOOK_TEXT_BYTES: usize = 256 * 1024;
+const MAX_HOOK_CONTEXT_FIELD_BYTES: usize = 128 * 1024;
+const MAX_HOOK_ATTACHMENTS: usize = 64;
+const MAX_HOOK_ATTACHMENT_KIND_BYTES: usize = 128;
+const MAX_HOOK_ATTACHMENT_REFERENCE_BYTES: usize = 4 * 1024;
+const MAX_IDEMPOTENCY_KEY_BYTES: usize = 255;
+const HUMAN_CREATE_IDEMPOTENCY_SCOPE: &str = "human-ticket-create";
+const HOOK_CREATE_IDEMPOTENCY_SCOPE: &str = "hook-ticket-create";
+const DEFAULT_TICKET_PAGE_SIZE: usize = 50;
+const TICKET_CURSOR_PREFIX: &str = "v1-";
 
 #[derive(Debug, Clone)]
 pub struct AuthConfig {
-    token: String,
+    /// Precomputed `Bearer {token}` header value so per-request auth checks
+    /// need no allocation.
+    expected_header: String,
 }
 
 impl AuthConfig {
     pub fn new(token: String) -> Self {
-        Self { token }
+        Self {
+            expected_header: format!("Bearer {token}"),
+        }
     }
 }
 
@@ -52,6 +87,7 @@ pub struct AppState<
     loom: L,
     auth: AuthConfig,
     configuration: ConfigurationRuntime,
+    run_actions: RunActionCoordinator,
 }
 
 impl<S, B, L> AppState<S, B, L> {
@@ -78,7 +114,38 @@ impl<S, B, L> AppState<S, B, L> {
             loom,
             auth,
             configuration,
+            run_actions: RunActionCoordinator::default(),
         }
+    }
+}
+
+#[derive(Clone, Default)]
+struct RunActionCoordinator {
+    locks: Arc<Mutex<HashMap<String, Weak<tokio::sync::Mutex<()>>>>>,
+}
+
+impl RunActionCoordinator {
+    fn try_lock(&self, ticket_id: &TicketId) -> Result<tokio::sync::OwnedMutexGuard<()>, ApiError> {
+        let lock = {
+            let mut locks = self
+                .locks
+                .lock()
+                .map_err(|_| ApiError::internal("run action lock registry poisoned"))?;
+            locks.retain(|_, lock| lock.strong_count() > 0);
+            let key = ticket_id.to_string();
+            if let Some(lock) = locks.get(&key).and_then(Weak::upgrade) {
+                lock
+            } else {
+                let lock = Arc::new(tokio::sync::Mutex::new(()));
+                locks.insert(key, Arc::downgrade(&lock));
+                lock
+            }
+        };
+        lock.try_lock_owned().map_err(|_| {
+            ApiError::conflict(format!(
+                "another run action is already in progress for ticket {ticket_id}"
+            ))
+        })
     }
 }
 
@@ -99,6 +166,38 @@ pub struct ConfigurationResponse {
     configuration_source: ConfigurationSource,
     configuration: ConfigurationDetails,
     config: TeaConfiguration,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConfigurationPatchRequest {
+    #[serde(default)]
+    notifications_enabled: Option<bool>,
+    #[serde(default)]
+    human_ticket_default_approval_policy: Option<String>,
+    #[serde(default)]
+    hook_ticket_default_approval_policy: Option<String>,
+}
+
+impl ConfigurationPatchRequest {
+    fn is_empty(&self) -> bool {
+        self.notifications_enabled.is_none()
+            && self.human_ticket_default_approval_policy.is_none()
+            && self.hook_ticket_default_approval_policy.is_none()
+    }
+
+    fn apply_to(self, mut config: TeaConfiguration) -> TeaConfiguration {
+        if let Some(enabled) = self.notifications_enabled {
+            config.notifications_enabled = enabled;
+        }
+        if let Some(policy) = self.human_ticket_default_approval_policy {
+            config.human_ticket_default_approval_policy = policy;
+        }
+        if let Some(policy) = self.hook_ticket_default_approval_policy {
+            config.hook_ticket_default_approval_policy = policy;
+        }
+        config
+    }
 }
 
 impl ConfigurationRuntime {
@@ -154,15 +253,74 @@ impl ConfigurationRuntime {
     }
 
     fn response(&self) -> Result<ConfigurationResponse, ApiError> {
-        let state = self
+        let mut state = self
             .inner
             .lock()
             .map_err(|_| ApiError::internal("configuration lock poisoned"))?;
+        Self::refresh_local_config_locked(&mut state)?;
         Ok(ConfigurationResponse {
             configuration_source: state.ownership.source,
             configuration: state.ownership.configuration.clone(),
             config: state.config.clone(),
         })
+    }
+
+    fn patch_local_config(
+        &self,
+        request: ConfigurationPatchRequest,
+    ) -> Result<ConfigurationResponse, ApiError> {
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| ApiError::internal("configuration lock poisoned"))?;
+        if state.ownership.source == ConfigurationSource::LoomManaged {
+            return Err(ApiError::conflict(
+                "configuration_managed_by_loom".to_string(),
+            ));
+        }
+
+        let fallback = state.config.clone();
+        let config = if let Some(path) = &state.local_config_path {
+            update_local_config_atomic(path, fallback, |current| {
+                let updated = request.apply_to(current);
+                validate_tea_configuration(&updated)
+                    .map_err(|error| ConfigError::InvalidUpdate(error.message))?;
+                Ok(updated)
+            })
+            .map_err(|error| match error {
+                ConfigError::InvalidUpdate(message) => ApiError::bad_request(message),
+                error => ApiError::internal(error.to_string()),
+            })?
+        } else {
+            let updated = request.apply_to(state.config.clone());
+            validate_tea_configuration(&updated)?;
+            updated
+        };
+        state.config = config;
+        Ok(ConfigurationResponse {
+            configuration_source: state.ownership.source,
+            configuration: state.ownership.configuration.clone(),
+            config: state.config.clone(),
+        })
+    }
+
+    fn refresh_local_config_locked(state: &mut ConfigurationRuntimeState) -> Result<(), ApiError> {
+        if state.ownership.source == ConfigurationSource::LoomManaged {
+            return Ok(());
+        }
+        let Some(path) = &state.local_config_path else {
+            return Ok(());
+        };
+        let Some(config) =
+            read_local_config_file(path).map_err(|error| ApiError::internal(error.to_string()))?
+        else {
+            return Ok(());
+        };
+        validate_tea_configuration(&config).map_err(|error| {
+            ApiError::internal(format!("invalid Tea local config: {}", error.message))
+        })?;
+        state.config = config;
+        Ok(())
     }
 
     fn replace_local_config(
@@ -180,15 +338,8 @@ impl ConfigurationRuntime {
             ));
         }
         if let Some(path) = &state.local_config_path {
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent).map_err(|error| {
-                    ApiError::internal(format!("create Tea config directory: {error}"))
-                })?;
-            }
-            let encoded = encode_local_config(&config)
+            write_local_config_atomic(path, &config)
                 .map_err(|error| ApiError::internal(error.to_string()))?;
-            std::fs::write(path, encoded)
-                .map_err(|error| ApiError::internal(format!("write Tea config file: {error}")))?;
         }
         state.config = config;
         Ok(ConfigurationResponse {
@@ -219,10 +370,11 @@ impl ConfigurationRuntime {
         &self,
         source: TicketSource,
     ) -> Result<ApprovalPolicy, ApiError> {
-        let state = self
+        let mut state = self
             .inner
             .lock()
             .map_err(|_| ApiError::internal("configuration lock poisoned"))?;
+        Self::refresh_local_config_locked(&mut state)?;
         let configured = match source {
             TicketSource::Hook => &state.config.hook_ticket_default_approval_policy,
             _ => &state.config.human_ticket_default_approval_policy,
@@ -243,7 +395,9 @@ where
         .route("/v1/status", get(status::<S, B, L>))
         .route(
             "/v1/configuration",
-            get(get_configuration::<S, B, L>).put(put_configuration::<S, B, L>),
+            get(get_configuration::<S, B, L>)
+                .put(put_configuration::<S, B, L>)
+                .patch(patch_configuration::<S, B, L>),
         )
         .route(
             "/v1/tickets",
@@ -330,6 +484,7 @@ where
             post(cancel_ticket::<S, B, L>),
         )
         .route("/v1/intake/hook", post(hook_intake::<S, B, L>))
+        .layer(DefaultBodyLimit::max(MAX_HTTP_JSON_REQUEST_BYTES))
         .with_state(state)
 }
 
@@ -353,292 +508,6 @@ async fn settings_page<S, A, L>(
     Ok(Html(render_settings_page(&configuration)))
 }
 
-fn render_settings_page(configuration: &ConfigurationResponse) -> String {
-    let source = configuration_source_label(configuration.configuration_source);
-    let owner = configuration_owner_label(configuration.configuration.owner);
-    let disabled = configuration.configuration_source == ConfigurationSource::LoomManaged;
-    let disabled_attr = if disabled { " disabled" } else { "" };
-    let loom_panel_url = configuration
-        .configuration
-        .loom_panel_url
-        .as_deref()
-        .unwrap_or("");
-    let loom_panel = if disabled {
-        format!(
-            r#"<section class="loom-callout">
-                <h2>This Tea configuration is managed by Loom</h2>
-                <p>Tea is running as an independent app, but Loom owns this configuration. Use Loom's Tea configuration panel for changes.</p>
-                <a class="primary-link" href="{loom_panel_url}">Open Loom Tea settings</a>
-            </section>"#,
-            loom_panel_url = escape_html(loom_panel_url)
-        )
-    } else {
-        r#"<section class="local-callout">
-                <h2>Tea local settings</h2>
-                <p>Loom is not managing Tea configuration, so this standalone Tea daemon can edit its local settings.</p>
-            </section>"#
-            .to_string()
-    };
-    let reason = configuration
-        .configuration
-        .reason
-        .as_deref()
-        .map(|value| {
-            format!(
-                r#"<p class="muted"><strong>Reason:</strong> {}</p>"#,
-                escape_html(value)
-            )
-        })
-        .unwrap_or_default();
-    let local_path = configuration
-        .configuration
-        .local_config_path
-        .as_deref()
-        .unwrap_or("not configured");
-    let loom_base_url = configuration
-        .configuration
-        .loom_base_url
-        .as_deref()
-        .unwrap_or("not configured");
-    let notifications_checked = if configuration.config.notifications_enabled {
-        " checked"
-    } else {
-        ""
-    };
-
-    format!(
-        r#"<!doctype html>
-<html lang="en" data-configuration-source="{source}">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Tea Settings</title>
-  <style>
-    :root {{
-      color-scheme: dark;
-      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: #090d1a;
-      color: #edf3ff;
-    }}
-    body {{
-      margin: 0;
-      min-height: 100vh;
-      background:
-        radial-gradient(circle at 20% 20%, rgba(113, 96, 255, 0.30), transparent 34rem),
-        radial-gradient(circle at 80% 10%, rgba(45, 212, 191, 0.18), transparent 26rem),
-        linear-gradient(135deg, #070b16 0%, #101827 100%);
-    }}
-    main {{
-      box-sizing: border-box;
-      width: min(960px, calc(100% - 32px));
-      margin: 0 auto;
-      padding: 48px 0 64px;
-    }}
-    .panel, .loom-callout, .local-callout {{
-      border: 1px solid rgba(148, 163, 184, 0.22);
-      border-radius: 24px;
-      background: rgba(15, 23, 42, 0.72);
-      box-shadow: 0 24px 80px rgba(0, 0, 0, 0.28);
-      backdrop-filter: blur(18px);
-      padding: 24px;
-      margin-top: 20px;
-    }}
-    h1 {{
-      font-size: clamp(2.1rem, 6vw, 4rem);
-      margin: 0 0 10px;
-      letter-spacing: -0.05em;
-    }}
-    h2 {{
-      margin-top: 0;
-    }}
-    .muted {{
-      color: #aab8d4;
-    }}
-    .grid {{
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-      gap: 14px;
-    }}
-    label {{
-      display: grid;
-      gap: 8px;
-      margin: 16px 0;
-      color: #cbd5e1;
-    }}
-    input, select {{
-      border: 1px solid rgba(148, 163, 184, 0.28);
-      border-radius: 14px;
-      background: rgba(2, 6, 23, 0.72);
-      color: #f8fafc;
-      padding: 12px 14px;
-      font: inherit;
-    }}
-    input[disabled], select[disabled] {{
-      color: #94a3b8;
-      cursor: not-allowed;
-      opacity: 0.65;
-    }}
-    button, .primary-link {{
-      border: 0;
-      border-radius: 999px;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      background: linear-gradient(135deg, #7c3aed, #06b6d4);
-      color: white;
-      cursor: pointer;
-      font-weight: 700;
-      min-height: 44px;
-      padding: 0 20px;
-      text-decoration: none;
-    }}
-    button[disabled] {{
-      cursor: not-allowed;
-      filter: grayscale(0.7);
-      opacity: 0.55;
-    }}
-    code {{
-      color: #bfdbfe;
-      overflow-wrap: anywhere;
-    }}
-    #message {{
-      min-height: 1.4em;
-    }}
-  </style>
-</head>
-<body>
-  <main>
-    <p class="muted">Standalone Tea configuration</p>
-    <h1>Tea Settings</h1>
-    <p class="muted">Tea can run as an independent local app. When Loom claims Tea configuration, this page becomes a read-only jump surface.</p>
-
-    <section class="panel">
-      <div class="grid">
-        <p><strong>Configuration source:</strong><br><code>{source}</code></p>
-        <p><strong>Owner:</strong><br><code>{owner}</code></p>
-        <p><strong>Local config:</strong><br><code>{local_path}</code></p>
-        <p><strong>Loom base URL:</strong><br><code>{loom_base_url}</code></p>
-      </div>
-      {reason}
-    </section>
-
-    {loom_panel}
-
-    <form class="panel" id="settings-form">
-      <h2>Editable local config</h2>
-      <label>
-        <span>Auth token for saving</span>
-        <input name="auth_token" type="password" autocomplete="current-password" placeholder="Bearer token required for PUT /v1/configuration"{disabled_attr}>
-      </label>
-      <label>
-        <span>Notifications enabled</span>
-        <input name="notifications_enabled" type="checkbox"{notifications_checked}{disabled_attr}>
-      </label>
-      <label>
-        <span>Human ticket default approval policy</span>
-        <select name="human_ticket_default_approval_policy"{disabled_attr}>
-          {human_options}
-        </select>
-      </label>
-      <label>
-        <span>Hook ticket default approval policy</span>
-        <select name="hook_ticket_default_approval_policy"{disabled_attr}>
-          {hook_options}
-        </select>
-      </label>
-      <button type="submit"{disabled_attr}>Save Tea local settings</button>
-      <p id="message" class="muted"></p>
-    </form>
-  </main>
-  <script>
-    const form = document.getElementById('settings-form');
-    const message = document.getElementById('message');
-    form.addEventListener('submit', async (event) => {{
-      event.preventDefault();
-      if ({disabled_js}) {{
-        message.textContent = 'Tea configuration is managed by Loom. Open Loom Tea settings instead.';
-        return;
-      }}
-      const data = new FormData(form);
-      const token = String(data.get('auth_token') || '').trim();
-      const response = await fetch('/v1/configuration', {{
-        method: 'PUT',
-        headers: {{
-          'content-type': 'application/json',
-          ...(token ? {{ authorization: `Bearer ${{token}}` }} : {{}})
-        }},
-        body: JSON.stringify({{
-          notifications_enabled: data.get('notifications_enabled') === 'on',
-          human_ticket_default_approval_policy: data.get('human_ticket_default_approval_policy'),
-          hook_ticket_default_approval_policy: data.get('hook_ticket_default_approval_policy')
-        }})
-      }});
-      message.textContent = response.ok ? 'Saved Tea local settings.' : `Save failed: ${{await response.text()}}`;
-    }});
-  </script>
-</body>
-</html>"#,
-        source = source,
-        owner = owner,
-        local_path = escape_html(local_path),
-        loom_base_url = escape_html(loom_base_url),
-        reason = reason,
-        loom_panel = loom_panel,
-        disabled_attr = disabled_attr,
-        disabled_js = if disabled { "true" } else { "false" },
-        notifications_checked = notifications_checked,
-        human_options =
-            approval_policy_options(&configuration.config.human_ticket_default_approval_policy),
-        hook_options =
-            approval_policy_options(&configuration.config.hook_ticket_default_approval_policy),
-    )
-}
-
-fn approval_policy_options(selected: &str) -> String {
-    [
-        ("human_before_execute", "Human before execute"),
-        ("human_before_completion", "Human before completion"),
-        ("manual_only", "Manual only"),
-        ("plan_only", "Plan only"),
-    ]
-    .into_iter()
-    .map(|(value, label)| {
-        let selected_attr = if selected == value { " selected" } else { "" };
-        format!(
-            r#"<option value="{}"{}>{}</option>"#,
-            escape_html(value),
-            selected_attr,
-            escape_html(label)
-        )
-    })
-    .collect::<Vec<_>>()
-    .join("\n")
-}
-
-fn configuration_source_label(source: ConfigurationSource) -> &'static str {
-    match source {
-        ConfigurationSource::Local => "local",
-        ConfigurationSource::LoomManaged => "loom-managed",
-        ConfigurationSource::Fallback => "fallback",
-    }
-}
-
-fn configuration_owner_label(owner: ConfigurationOwner) -> &'static str {
-    match owner {
-        ConfigurationOwner::Tea => "tea",
-        ConfigurationOwner::Loom => "loom",
-    }
-}
-
-fn escape_html(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#39;")
-}
-
 async fn status<S, A, L>(
     State(state): State<AppState<S, A, L>>,
     headers: HeaderMap,
@@ -646,16 +515,19 @@ async fn status<S, A, L>(
 where
     S: TicketStore,
     A: TeaBrainProvider,
+    L: LoomClient,
 {
     require_auth(&state.auth, &headers)?;
     let store = state.store.store_status().await?;
     let configuration = state.configuration.response()?;
     let brain_provider = state.brain.metadata();
+    let execution_provider = state.loom.execution_provider();
     Ok(Json(json!({
         "service": "tea",
         "status": "ok",
         "store": store,
         "brain_provider": brain_provider,
+        "execution_provider": execution_provider,
         "configuration_source": configuration.configuration_source,
         "configuration": configuration.configuration,
     })))
@@ -664,23 +536,51 @@ where
 async fn get_configuration<S, A, L>(
     State(state): State<AppState<S, A, L>>,
     headers: HeaderMap,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<ConfigurationResponse>, ApiError> {
     require_auth(&state.auth, &headers)?;
-    Ok(Json(json!(state.configuration.response()?)))
+    Ok(Json(state.configuration.response()?))
 }
 
 async fn put_configuration<S, A, L>(
     State(state): State<AppState<S, A, L>>,
     headers: HeaderMap,
     Json(request): Json<TeaConfiguration>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<ConfigurationResponse>, ApiError> {
     require_auth(&state.auth, &headers)?;
-    Ok(Json(json!(state
-        .configuration
-        .replace_local_config(request)?)))
+    // `replace_local_config` takes tea_config's cross-process file lock, which
+    // can sleep for seconds and fsync; keep that off the async worker threads.
+    let configuration = state.configuration.clone();
+    let response = run_blocking(move || configuration.replace_local_config(request)).await?;
+    Ok(Json(response))
 }
 
-#[derive(Debug, Deserialize)]
+async fn patch_configuration<S, A, L>(
+    State(state): State<AppState<S, A, L>>,
+    headers: HeaderMap,
+    Json(request): Json<ConfigurationPatchRequest>,
+) -> Result<Json<ConfigurationResponse>, ApiError> {
+    require_auth(&state.auth, &headers)?;
+    if request.is_empty() {
+        return Err(ApiError::bad_request(
+            "configuration patch must update at least one field".to_string(),
+        ));
+    }
+    // Same blocking file-lock concern as `put_configuration`.
+    let configuration = state.configuration.clone();
+    let response = run_blocking(move || configuration.patch_local_config(request)).await?;
+    Ok(Json(response))
+}
+
+/// Runs a blocking closure on tokio's blocking pool, flattening the join error.
+async fn run_blocking<T: Send + 'static>(
+    f: impl FnOnce() -> Result<T, ApiError> + Send + 'static,
+) -> Result<T, ApiError> {
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|error| ApiError::internal(format!("blocking task failed: {error}")))?
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct CreateTicketRequest {
     pub title: String,
     pub description: String,
@@ -722,15 +622,47 @@ pub struct PolicyRequest {
     pub mode: ApprovalPolicy,
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct TicketListQuery {
+    status: Option<String>,
+    source: Option<String>,
+    limit: Option<String>,
+    cursor: Option<String>,
+}
+
+impl TicketListQuery {
+    fn pagination_requested(&self) -> bool {
+        self.status.is_some()
+            || self.source.is_some()
+            || self.limit.is_some()
+            || self.cursor.is_some()
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct TicketPageResponse<T> {
+    items: Vec<T>,
+    next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TicketCursor {
+    ordinal: i64,
+    status: Option<TicketStatus>,
+    source: Option<TicketSource>,
+}
+
 async fn create_ticket<S, A, L>(
     State(state): State<AppState<S, A, L>>,
     headers: HeaderMap,
     Json(request): Json<CreateTicketRequest>,
-) -> Result<Json<Value>, ApiError>
+) -> Result<Json<Ticket>, ApiError>
 where
     S: TicketStore,
 {
     require_auth(&state.auth, &headers)?;
+    validate_create_ticket_request(&request)?;
+    let idempotency = idempotency_request(&headers, HUMAN_CREATE_IDEMPOTENCY_SCOPE, &request)?;
     let policy = match request.approval_policy {
         Some(policy) => policy,
         None => state
@@ -743,72 +675,97 @@ where
     };
     let ticket = state
         .store
-        .create_ticket_with_options(
+        .create_ticket_idempotent(
             request.title,
             request.description,
             TicketSource::Human,
             ActorRef::human("local-user"),
             policy,
             options,
+            idempotency,
         )
         .await?;
-    Ok(Json(json!(ticket)))
+    Ok(Json(ticket))
 }
 
 async fn list_tickets<S, A, L>(
     State(state): State<AppState<S, A, L>>,
     headers: HeaderMap,
-) -> Result<Json<Value>, ApiError>
+    Query(query): Query<TicketListQuery>,
+) -> Result<Response, ApiError>
 where
     S: TicketStore,
 {
     require_auth(&state.auth, &headers)?;
-    Ok(Json(json!(state.store.list_tickets().await?)))
+    if !query.pagination_requested() {
+        return Ok(Json(state.store.list_tickets().await?).into_response());
+    }
+    let request = parse_ticket_page_request(&query)?;
+    let page = state.store.list_tickets_page(request).await?;
+    Ok(Json(TicketPageResponse {
+        items: page.items,
+        next_cursor: page
+            .next_ordinal
+            .map(|ordinal| encode_ticket_cursor(ordinal, request.status, request.source)),
+    })
+    .into_response())
 }
 
 async fn ticket_metrics<S, A, L>(
     State(state): State<AppState<S, A, L>>,
     headers: HeaderMap,
-) -> Result<Json<Value>, ApiError>
+    Query(query): Query<TicketListQuery>,
+) -> Result<Response, ApiError>
 where
     S: TicketStore,
 {
     require_auth(&state.auth, &headers)?;
-    Ok(Json(json!(state.store.ticket_metrics().await?)))
+    if !query.pagination_requested() {
+        return Ok(Json(state.store.ticket_metrics().await?).into_response());
+    }
+    let request = parse_ticket_page_request(&query)?;
+    let page = state.store.ticket_metrics_page(request).await?;
+    Ok(Json(TicketPageResponse {
+        items: page.items,
+        next_cursor: page
+            .next_ordinal
+            .map(|ordinal| encode_ticket_cursor(ordinal, request.status, request.source)),
+    })
+    .into_response())
 }
 
 async fn get_ticket<S, A, L>(
     State(state): State<AppState<S, A, L>>,
     headers: HeaderMap,
     Path(ticket_id): Path<String>,
-) -> Result<Json<Value>, ApiError>
+) -> Result<Json<Ticket>, ApiError>
 where
     S: TicketStore,
 {
     require_auth(&state.auth, &headers)?;
-    Ok(Json(json!(
+    Ok(Json(
         state
             .store
             .get_ticket(&parse_ticket_id(&ticket_id)?)
-            .await?
-    )))
+            .await?,
+    ))
 }
 
 async fn ticket_bundle<S, A, L>(
     State(state): State<AppState<S, A, L>>,
     headers: HeaderMap,
     Path(ticket_id): Path<String>,
-) -> Result<Json<Value>, ApiError>
+) -> Result<Json<TicketBundle>, ApiError>
 where
     S: TicketStore,
 {
     require_auth(&state.auth, &headers)?;
-    Ok(Json(json!(
+    Ok(Json(
         state
             .store
             .ticket_bundle(&parse_ticket_id(&ticket_id)?)
-            .await?
-    )))
+            .await?,
+    ))
 }
 
 async fn edit_ticket<S, A, L>(
@@ -816,11 +773,12 @@ async fn edit_ticket<S, A, L>(
     headers: HeaderMap,
     Path(ticket_id): Path<String>,
     Json(request): Json<EditTicketRequest>,
-) -> Result<Json<Value>, ApiError>
+) -> Result<Json<Ticket>, ApiError>
 where
     S: TicketStore,
 {
     require_auth(&state.auth, &headers)?;
+    validate_edit_ticket_request(&request)?;
     let edits = TicketEdits {
         title: request.title,
         description: request.description,
@@ -835,7 +793,7 @@ where
             edits,
         )
         .await?;
-    Ok(Json(json!(ticket)))
+    Ok(Json(ticket))
 }
 
 async fn add_comment<S, A, L>(
@@ -843,11 +801,12 @@ async fn add_comment<S, A, L>(
     headers: HeaderMap,
     Path(ticket_id): Path<String>,
     Json(request): Json<CommentRequest>,
-) -> Result<Json<Value>, ApiError>
+) -> Result<Json<TicketComment>, ApiError>
 where
     S: TicketStore,
 {
     require_auth(&state.auth, &headers)?;
+    validate_max_bytes("comment body", &request.body, MAX_COMMENT_BODY_BYTES)?;
     let comment = state
         .store
         .add_comment(
@@ -856,48 +815,48 @@ where
             request.body,
         )
         .await?;
-    Ok(Json(json!(comment)))
+    Ok(Json(comment))
 }
 
 async fn ticket_comments<S, A, L>(
     State(state): State<AppState<S, A, L>>,
     headers: HeaderMap,
     Path(ticket_id): Path<String>,
-) -> Result<Json<Value>, ApiError>
+) -> Result<Json<Vec<TicketComment>>, ApiError>
 where
     S: TicketStore,
 {
     require_auth(&state.auth, &headers)?;
-    Ok(Json(json!(
+    Ok(Json(
         state
             .store
             .ticket_comments(&parse_ticket_id(&ticket_id)?)
-            .await?
-    )))
+            .await?,
+    ))
 }
 
 async fn ticket_events<S, A, L>(
     State(state): State<AppState<S, A, L>>,
     headers: HeaderMap,
     Path(ticket_id): Path<String>,
-) -> Result<Json<Value>, ApiError>
+) -> Result<Json<Vec<TicketEvent>>, ApiError>
 where
     S: TicketStore,
 {
     require_auth(&state.auth, &headers)?;
-    Ok(Json(json!(
+    Ok(Json(
         state
             .store
             .ticket_events(&parse_ticket_id(&ticket_id)?)
-            .await?
-    )))
+            .await?,
+    ))
 }
 
 async fn ticket_analysis_record<S, A, L>(
     State(state): State<AppState<S, A, L>>,
     headers: HeaderMap,
     Path(ticket_id): Path<String>,
-) -> Result<Json<Value>, ApiError>
+) -> Result<Json<Option<TicketAnalysis>>, ApiError>
 where
     S: TicketStore,
 {
@@ -906,28 +865,28 @@ where
     // Confirm the ticket exists so unknown ids return 404, then return the
     // stored analysis or `null` when no analysis has been generated yet.
     state.store.get_ticket(&ticket_id).await?;
-    Ok(Json(json!(state.store.ticket_analysis(&ticket_id).await?)))
+    Ok(Json(state.store.ticket_analysis(&ticket_id).await?))
 }
 
 async fn ticket_plan_record<S, A, L>(
     State(state): State<AppState<S, A, L>>,
     headers: HeaderMap,
     Path(ticket_id): Path<String>,
-) -> Result<Json<Value>, ApiError>
+) -> Result<Json<Option<Plan>>, ApiError>
 where
     S: TicketStore,
 {
     require_auth(&state.auth, &headers)?;
     let ticket_id = parse_ticket_id(&ticket_id)?;
     state.store.get_ticket(&ticket_id).await?;
-    Ok(Json(json!(state.store.ticket_plan(&ticket_id).await?)))
+    Ok(Json(state.store.ticket_plan(&ticket_id).await?))
 }
 
 async fn analyze_ticket<S, A, L>(
     State(state): State<AppState<S, A, L>>,
     headers: HeaderMap,
     Path(ticket_id): Path<String>,
-) -> Result<Json<Value>, ApiError>
+) -> Result<Json<TicketAnalysis>, ApiError>
 where
     S: TicketStore,
     A: TeaBrainProvider,
@@ -945,14 +904,14 @@ where
             proposal.analysis,
         )
         .await?;
-    Ok(Json(json!(analysis)))
+    Ok(Json(analysis))
 }
 
 async fn plan_ticket<S, A, L>(
     State(state): State<AppState<S, A, L>>,
     headers: HeaderMap,
     Path(ticket_id): Path<String>,
-) -> Result<Json<Value>, ApiError>
+) -> Result<Json<Plan>, ApiError>
 where
     S: TicketStore,
     A: TeaBrainProvider,
@@ -978,7 +937,7 @@ where
             proposal.plan,
         )
         .await?;
-    Ok(Json(json!(plan)))
+    Ok(Json(plan))
 }
 
 async fn decompose_ticket<S, A, L>(
@@ -1030,10 +989,12 @@ where
     A: TeaBrainProvider,
 {
     let comments = state.store.ticket_comments(&ticket.id).await?;
+    let current_policy = ticket.approval_policy;
+    let ticket_source = ticket.source;
     let request = DecomposeTicketRequest::new(ticket, comments, decomposition_context());
     let provider = state.brain.metadata();
     let proposal = state.brain.decompose_ticket(request).await?;
-    validate_decomposition_proposal(&proposal)?;
+    validate_decomposition_proposal(&proposal, current_policy, ticket_source)?;
     Ok((provider, proposal))
 }
 
@@ -1047,7 +1008,11 @@ fn decomposition_context() -> DecomposeContext {
     }
 }
 
-fn validate_decomposition_proposal(proposal: &DecomposeTicketProposal) -> Result<(), ApiError> {
+fn validate_decomposition_proposal(
+    proposal: &DecomposeTicketProposal,
+    current_policy: ApprovalPolicy,
+    ticket_source: TicketSource,
+) -> Result<(), ApiError> {
     if proposal.schema_version != 1 {
         return Err(ApiError::bad_gateway(format!(
             "invalid BrainProvider proposal schema_version: {}",
@@ -1079,6 +1044,27 @@ fn validate_decomposition_proposal(proposal: &DecomposeTicketProposal) -> Result
             "invalid BrainProvider proposal: plan.steps is required",
         ));
     }
+    if weakens_approval_policy(current_policy, proposal.analysis.recommended_policy) {
+        return Err(ApiError::bad_gateway(format!(
+            "invalid BrainProvider proposal: recommended policy {:?} weakens the current {:?} approval gates",
+            proposal.analysis.recommended_policy, current_policy
+        )));
+    }
+    let proposed_run_decision = evaluate_run(&PolicyInput {
+        source: ticket_source,
+        risk_level: proposal.analysis.risk_assessment,
+        approval_policy: proposal.analysis.recommended_policy,
+        has_approval: false,
+        has_evidence: false,
+        validation_passed: false,
+    });
+    if !matches!(proposed_run_decision, PolicyDecision::Allow)
+        && !proposal.plan.requires_approval_before_execute
+    {
+        return Err(ApiError::bad_gateway(
+            "invalid BrainProvider proposal: plan omits the approval gate required by its recommended policy",
+        ));
+    }
     Ok(())
 }
 
@@ -1087,7 +1073,7 @@ async fn update_ticket_policy<S, A, L>(
     headers: HeaderMap,
     Path(ticket_id): Path<String>,
     Json(request): Json<PolicyRequest>,
-) -> Result<Json<Value>, ApiError>
+) -> Result<Json<Ticket>, ApiError>
 where
     S: TicketStore,
 {
@@ -1100,14 +1086,14 @@ where
             request.mode,
         )
         .await?;
-    Ok(Json(json!(ticket)))
+    Ok(Json(ticket))
 }
 
 async fn approve_ticket<S, A, L>(
     State(state): State<AppState<S, A, L>>,
     headers: HeaderMap,
     Path(ticket_id): Path<String>,
-) -> Result<Json<Value>, ApiError>
+) -> Result<Json<Ticket>, ApiError>
 where
     S: TicketStore,
 {
@@ -1116,7 +1102,7 @@ where
         .store
         .grant_approval(&parse_ticket_id(&ticket_id)?, ActorRef::human("local-user"))
         .await?;
-    Ok(Json(json!(ticket)))
+    Ok(Json(ticket))
 }
 
 async fn reject_ticket<S, A, L>(
@@ -1124,11 +1110,16 @@ async fn reject_ticket<S, A, L>(
     headers: HeaderMap,
     Path(ticket_id): Path<String>,
     Json(request): Json<RejectRequest>,
-) -> Result<Json<Value>, ApiError>
+) -> Result<Json<Ticket>, ApiError>
 where
     S: TicketStore,
 {
     require_auth(&state.auth, &headers)?;
+    validate_max_bytes(
+        "approval rejection reason",
+        &request.reason,
+        MAX_REJECTION_REASON_BYTES,
+    )?;
     let ticket = state
         .store
         .reject_approval(
@@ -1137,20 +1128,21 @@ where
             request.reason,
         )
         .await?;
-    Ok(Json(json!(ticket)))
+    Ok(Json(ticket))
 }
 
 async fn run_ticket<S, A, L>(
     State(state): State<AppState<S, A, L>>,
     headers: HeaderMap,
     Path(ticket_id): Path<String>,
-) -> Result<Json<Value>, ApiError>
+) -> Result<Json<Run>, ApiError>
 where
     S: TicketStore,
     L: LoomClient,
 {
     require_auth(&state.auth, &headers)?;
     let ticket_id = parse_ticket_id(&ticket_id)?;
+    let _run_action = state.run_actions.try_lock(&ticket_id)?;
     let ticket = state.store.get_ticket(&ticket_id).await?;
     ensure_ticket_can_run_for_api(&ticket)?;
     let has_approval = state.store.has_approval(&ticket_id).await?;
@@ -1160,6 +1152,7 @@ where
         approval_policy: ticket.approval_policy,
         has_approval,
         has_evidence: false,
+        validation_passed: false,
     }) {
         PolicyDecision::Allow => {
             let run = state.loom.start_run(&ticket).await?;
@@ -1167,7 +1160,7 @@ where
                 .store
                 .add_run(&ticket_id, ActorRef::loom("tea-loom"), run)
                 .await?;
-            Ok(Json(json!(run)))
+            Ok(Json(run))
         }
         PolicyDecision::RequestApproval { reason } => Err(ApiError::forbidden(reason)),
         PolicyDecision::Deny { reason } => Err(ApiError::forbidden(reason)),
@@ -1178,138 +1171,138 @@ async fn stop_latest_run<S, A, L>(
     State(state): State<AppState<S, A, L>>,
     headers: HeaderMap,
     Path(ticket_id): Path<String>,
-) -> Result<Json<Value>, ApiError>
+) -> Result<Json<Run>, ApiError>
 where
     S: TicketStore,
     L: LoomClient,
 {
     require_auth(&state.auth, &headers)?;
     let ticket_id = parse_ticket_id(&ticket_id)?;
+    let _run_action = state.run_actions.try_lock(&ticket_id)?;
     let ticket = state.store.get_ticket(&ticket_id).await?;
     ensure_ticket_mutable_for_api(&ticket, "stop latest run for")?;
-    let latest = latest_run(&state.store, &ticket_id).await?;
+    let latest = require_latest_run(&state.store, &ticket_id).await?;
+    ensure_run_can_stop_for_api(&latest)?;
     let stopped = state.loom.stop_run(&latest).await?;
-    ensure_loom_run_action_response_matches(&latest, &stopped)?;
+    ensure_loom_run_action_response_matches(&latest, &stopped, RunStatus::Stopped)?;
     let updated = state
         .store
-        .update_run_status(
-            &stopped.id,
-            &ticket_id,
-            ActorRef::loom("tea-loom"),
-            stopped.status,
-        )
+        .update_latest_run_if_unchanged(&ticket_id, ActorRef::loom("tea-loom"), latest, stopped)
         .await?;
-    Ok(Json(json!(updated)))
+    Ok(Json(updated))
 }
 
 async fn retry_latest_run<S, A, L>(
     State(state): State<AppState<S, A, L>>,
     headers: HeaderMap,
     Path(ticket_id): Path<String>,
-) -> Result<Json<Value>, ApiError>
+) -> Result<Json<Run>, ApiError>
 where
     S: TicketStore,
     L: LoomClient,
 {
     require_auth(&state.auth, &headers)?;
     let ticket_id = parse_ticket_id(&ticket_id)?;
+    let _run_action = state.run_actions.try_lock(&ticket_id)?;
     let ticket = state.store.get_ticket(&ticket_id).await?;
     ensure_ticket_mutable_for_api(&ticket, "retry latest run for")?;
-    let latest = latest_run(&state.store, &ticket_id).await?;
+    let latest = require_latest_run(&state.store, &ticket_id).await?;
+    ensure_run_can_retry_for_api(&latest)?;
     let retrying = state.loom.retry_run(&latest).await?;
-    ensure_loom_run_action_response_matches(&latest, &retrying)?;
+    ensure_loom_run_action_response_matches(&latest, &retrying, RunStatus::Retrying)?;
     let updated = state
         .store
-        .update_run_status(
-            &retrying.id,
-            &ticket_id,
-            ActorRef::loom("tea-loom"),
-            retrying.status,
-        )
+        .update_latest_run_if_unchanged(&ticket_id, ActorRef::loom("tea-loom"), latest, retrying)
         .await?;
-    Ok(Json(json!(updated)))
+    Ok(Json(updated))
 }
 
 async fn stop_run<S, A, L>(
     State(state): State<AppState<S, A, L>>,
     headers: HeaderMap,
     Path(run_id): Path<String>,
-) -> Result<Json<Value>, ApiError>
+) -> Result<Json<Run>, ApiError>
 where
     S: TicketStore,
     L: LoomClient,
 {
     require_auth(&state.auth, &headers)?;
-    let run = state.store.get_run(&parse_run_id(&run_id)?).await?;
+    let run_id = parse_run_id(&run_id)?;
+    let initial_run = state.store.get_run(&run_id).await?;
+    let _run_action = state.run_actions.try_lock(&initial_run.ticket_id)?;
+    let run = state.store.get_run(&run_id).await?;
     let ticket = state.store.get_ticket(&run.ticket_id).await?;
     ensure_ticket_mutable_for_api(&ticket, "stop run for")?;
+    ensure_run_can_stop_for_api(&run)?;
     let stopped = state.loom.stop_run(&run).await?;
-    ensure_loom_run_action_response_matches(&run, &stopped)?;
+    ensure_loom_run_action_response_matches(&run, &stopped, RunStatus::Stopped)?;
     let updated = state
         .store
-        .update_run_status(
-            &stopped.id,
+        .update_run_if_unchanged(
             &run.ticket_id,
             ActorRef::loom("tea-loom"),
-            stopped.status,
+            run.clone(),
+            stopped,
         )
         .await?;
-    Ok(Json(json!(updated)))
+    Ok(Json(updated))
 }
 
 async fn retry_run<S, A, L>(
     State(state): State<AppState<S, A, L>>,
     headers: HeaderMap,
     Path(run_id): Path<String>,
-) -> Result<Json<Value>, ApiError>
+) -> Result<Json<Run>, ApiError>
 where
     S: TicketStore,
     L: LoomClient,
 {
     require_auth(&state.auth, &headers)?;
-    let run = state.store.get_run(&parse_run_id(&run_id)?).await?;
+    let run_id = parse_run_id(&run_id)?;
+    let initial_run = state.store.get_run(&run_id).await?;
+    let _run_action = state.run_actions.try_lock(&initial_run.ticket_id)?;
+    let run = state.store.get_run(&run_id).await?;
     let ticket = state.store.get_ticket(&run.ticket_id).await?;
     ensure_ticket_mutable_for_api(&ticket, "retry run for")?;
+    ensure_run_can_retry_for_api(&run)?;
     let retrying = state.loom.retry_run(&run).await?;
-    ensure_loom_run_action_response_matches(&run, &retrying)?;
+    ensure_loom_run_action_response_matches(&run, &retrying, RunStatus::Retrying)?;
     let updated = state
         .store
-        .update_run_status(
-            &retrying.id,
+        .update_run_if_unchanged(
             &run.ticket_id,
             ActorRef::loom("tea-loom"),
-            retrying.status,
+            run.clone(),
+            retrying,
         )
         .await?;
-    Ok(Json(json!(updated)))
+    Ok(Json(updated))
 }
 
 async fn list_runs<S, A, L>(
     State(state): State<AppState<S, A, L>>,
     headers: HeaderMap,
     Path(ticket_id): Path<String>,
-) -> Result<Json<Value>, ApiError>
+) -> Result<Json<Vec<Run>>, ApiError>
 where
     S: TicketStore,
 {
     require_auth(&state.auth, &headers)?;
-    Ok(Json(json!(
-        state.store.list_runs(&parse_ticket_id(&ticket_id)?).await?
-    )))
+    Ok(Json(
+        state.store.list_runs(&parse_ticket_id(&ticket_id)?).await?,
+    ))
 }
 
 async fn get_run<S, A, L>(
     State(state): State<AppState<S, A, L>>,
     headers: HeaderMap,
     Path(run_id): Path<String>,
-) -> Result<Json<Value>, ApiError>
+) -> Result<Json<Run>, ApiError>
 where
     S: TicketStore,
 {
     require_auth(&state.auth, &headers)?;
-    Ok(Json(json!(
-        state.store.get_run(&parse_run_id(&run_id)?).await?
-    )))
+    Ok(Json(state.store.get_run(&parse_run_id(&run_id)?).await?))
 }
 
 async fn export_ticket_json<S, A, L>(
@@ -1322,19 +1315,14 @@ where
 {
     require_auth(&state.auth, &headers)?;
     let ticket_id = parse_ticket_id(&ticket_id)?;
-    let ticket = state.store.get_ticket(&ticket_id).await?;
-    let events = state.store.ticket_events(&ticket_id).await?;
-    let runs = state.store.list_runs(&ticket_id).await?;
-    let comments = state.store.ticket_comments(&ticket_id).await?;
-    let analysis = state.store.ticket_analysis(&ticket_id).await?;
-    let plan = state.store.ticket_plan(&ticket_id).await?;
+    let bundle = state.store.ticket_bundle(&ticket_id).await?;
     Ok(Json(export_json(
-        &ticket,
-        &events,
-        &runs,
-        &comments,
-        analysis.as_ref(),
-        plan.as_ref(),
+        &bundle.ticket,
+        &bundle.events,
+        &bundle.runs,
+        &bundle.comments,
+        bundle.analysis.as_ref(),
+        bundle.plan.as_ref(),
     )))
 }
 
@@ -1348,21 +1336,16 @@ where
 {
     require_auth(&state.auth, &headers)?;
     let ticket_id = parse_ticket_id(&ticket_id)?;
-    let ticket = state.store.get_ticket(&ticket_id).await?;
-    let events = state.store.ticket_events(&ticket_id).await?;
-    let runs = state.store.list_runs(&ticket_id).await?;
-    let comments = state.store.ticket_comments(&ticket_id).await?;
-    let analysis = state.store.ticket_analysis(&ticket_id).await?;
-    let plan = state.store.ticket_plan(&ticket_id).await?;
+    let bundle = state.store.ticket_bundle(&ticket_id).await?;
     Ok((
         [("content-type", "text/markdown; charset=utf-8")],
         render_export_markdown(
-            &ticket,
-            &events,
-            &runs,
-            &comments,
-            analysis.as_ref(),
-            plan.as_ref(),
+            &bundle.ticket,
+            &bundle.events,
+            &bundle.runs,
+            &bundle.comments,
+            bundle.analysis.as_ref(),
+            bundle.plan.as_ref(),
         ),
     )
         .into_response())
@@ -1372,7 +1355,7 @@ async fn accept_ticket<S, A, L>(
     State(state): State<AppState<S, A, L>>,
     headers: HeaderMap,
     Path(ticket_id): Path<String>,
-) -> Result<Json<Value>, ApiError>
+) -> Result<Json<Ticket>, ApiError>
 where
     S: TicketStore,
 {
@@ -1381,14 +1364,14 @@ where
         .store
         .accept_ticket(&parse_ticket_id(&ticket_id)?, ActorRef::human("local-user"))
         .await?;
-    Ok(Json(json!(ticket)))
+    Ok(Json(ticket))
 }
 
 async fn close_ticket<S, A, L>(
     State(state): State<AppState<S, A, L>>,
     headers: HeaderMap,
     Path(ticket_id): Path<String>,
-) -> Result<Json<Value>, ApiError>
+) -> Result<Json<Ticket>, ApiError>
 where
     S: TicketStore,
 {
@@ -1397,18 +1380,14 @@ where
     let ticket = state.store.get_ticket(&ticket_id).await?;
     ensure_ticket_mutable_for_api(&ticket, "close")?;
     let has_approval = state.store.has_approval(&ticket_id).await?;
-    let has_evidence = state
-        .store
-        .list_runs(&ticket_id)
-        .await?
-        .into_iter()
-        .any(|run| run.evidence.is_some());
+    let has_evidence = state.store.has_run_evidence(&ticket_id).await?;
     match evaluate_close(&PolicyInput {
         source: ticket.source,
         risk_level: ticket.risk_level,
         approval_policy: ticket.approval_policy,
         has_approval,
         has_evidence,
+        validation_passed: false,
     }) {
         PolicyDecision::Allow => {}
         PolicyDecision::RequestApproval { reason } => return Err(ApiError::forbidden(reason)),
@@ -1418,14 +1397,14 @@ where
         .store
         .close_ticket(&ticket_id, ActorRef::human("local-user"))
         .await?;
-    Ok(Json(json!(ticket)))
+    Ok(Json(ticket))
 }
 
 async fn cancel_ticket<S, A, L>(
     State(state): State<AppState<S, A, L>>,
     headers: HeaderMap,
     Path(ticket_id): Path<String>,
-) -> Result<Json<Value>, ApiError>
+) -> Result<Json<Ticket>, ApiError>
 where
     S: TicketStore,
 {
@@ -1434,44 +1413,51 @@ where
         .store
         .cancel_ticket(&parse_ticket_id(&ticket_id)?, ActorRef::human("local-user"))
         .await?;
-    Ok(Json(json!(ticket)))
+    Ok(Json(ticket))
 }
 
 async fn hook_intake<S, A, L>(
     State(state): State<AppState<S, A, L>>,
     headers: HeaderMap,
     Json(request): Json<HookIntakeRequest>,
-) -> Result<Json<Value>, ApiError>
+) -> Result<Json<Ticket>, ApiError>
 where
     S: TicketStore,
 {
     require_auth(&state.auth, &headers)?;
+    validate_hook_intake_request(&request)?;
+    let idempotency = idempotency_request(&headers, HOOK_CREATE_IDEMPOTENCY_SCOPE, &request)?;
     let normalized = normalize_hook_intake(&request);
+    validate_max_bytes(
+        "normalized Hook description",
+        &normalized.description,
+        MAX_TICKET_DESCRIPTION_BYTES,
+    )?;
     let policy = state
         .configuration
         .default_approval_policy_for_source(normalized.source)?;
     let ticket = state
         .store
-        .create_ticket_with_policy(
+        .create_ticket_idempotent(
             normalized.title,
             normalized.description,
             normalized.source,
             normalized.actor,
             policy,
+            TicketCreateOptions::default(),
+            idempotency,
         )
         .await?;
-    Ok(Json(json!(ticket)))
+    Ok(Json(ticket))
 }
 
-async fn latest_run<S>(store: &S, ticket_id: &TicketId) -> Result<tea_core::Run, ApiError>
+async fn require_latest_run<S>(store: &S, ticket_id: &TicketId) -> Result<Run, ApiError>
 where
     S: TicketStore,
 {
     store
-        .list_runs(ticket_id)
+        .latest_run(ticket_id)
         .await?
-        .into_iter()
-        .last()
         .ok_or_else(|| ApiError::not_found("run not found".to_string()))
 }
 
@@ -1490,7 +1476,10 @@ fn ensure_ticket_mutable_for_api(ticket: &Ticket, action: &str) -> Result<(), Ap
 
 fn ensure_ticket_can_run_for_api(ticket: &Ticket) -> Result<(), ApiError> {
     ensure_ticket_mutable_for_api(ticket, "run")?;
-    if ticket.status == TicketStatus::Blocked {
+    if matches!(
+        ticket.status,
+        TicketStatus::Blocked | TicketStatus::NeedsInfo
+    ) {
         return Err(ApiError::conflict(format!(
             "invalid ticket transition: cannot run ticket {} in {:?} status",
             ticket.id, ticket.status
@@ -1499,9 +1488,32 @@ fn ensure_ticket_can_run_for_api(ticket: &Ticket) -> Result<(), ApiError> {
     Ok(())
 }
 
+fn ensure_run_can_stop_for_api(run: &tea_core::Run) -> Result<(), ApiError> {
+    if run.status.can_stop() {
+        return Ok(());
+    }
+
+    Err(ApiError::conflict(format!(
+        "invalid run transition: cannot stop run {} in {:?} status",
+        run.id, run.status
+    )))
+}
+
+fn ensure_run_can_retry_for_api(run: &tea_core::Run) -> Result<(), ApiError> {
+    if run.status.can_retry() {
+        return Ok(());
+    }
+
+    Err(ApiError::conflict(format!(
+        "invalid run transition: cannot retry run {} in {:?} status",
+        run.id, run.status
+    )))
+}
+
 fn ensure_loom_run_action_response_matches(
     expected: &tea_core::Run,
     actual: &tea_core::Run,
+    expected_status: RunStatus,
 ) -> Result<(), ApiError> {
     if actual.id != expected.id || actual.ticket_id != expected.ticket_id {
         return Err(ApiError::conflict(format!(
@@ -1509,18 +1521,70 @@ fn ensure_loom_run_action_response_matches(
             expected.id, expected.ticket_id, actual.id, actual.ticket_id
         )));
     }
+    if actual.status != expected_status {
+        return Err(ApiError::conflict(format!(
+            "Loom run action returned invalid status for run {}: expected {:?}, got {:?}",
+            expected.id, expected_status, actual.status
+        )));
+    }
     Ok(())
 }
 
 fn require_auth(auth: &AuthConfig, headers: &HeaderMap) -> Result<(), ApiError> {
-    let expected = format!("Bearer {}", auth.token);
-    match headers
-        .get("authorization")
-        .and_then(|value| value.to_str().ok())
-    {
-        Some(actual) if actual == expected => Ok(()),
+    match headers.get("authorization") {
+        Some(actual) if constant_time_eq(actual.as_bytes(), auth.expected_header.as_bytes()) => {
+            Ok(())
+        }
         _ => Err(ApiError::unauthorized("missing or invalid bearer token")),
     }
+}
+
+/// Constant-time byte equality for secret comparison: content differences
+/// never short-circuit, so timing cannot leak how many leading bytes of the
+/// presented token matched. Returning early on a length mismatch is fine
+/// because the expected header length is not secret.
+fn constant_time_eq(actual: &[u8], expected: &[u8]) -> bool {
+    if actual.len() != expected.len() {
+        return false;
+    }
+    actual
+        .iter()
+        .zip(expected)
+        .fold(0u8, |diff, (a, b)| std::hint::black_box(diff | (a ^ b)))
+        == 0
+}
+
+fn idempotency_request(
+    headers: &HeaderMap,
+    scope: &str,
+    request: &impl Serialize,
+) -> Result<Option<IdempotencyRequest>, ApiError> {
+    let mut values = headers.get_all("idempotency-key").iter();
+    let Some(value) = values.next() else {
+        return Ok(None);
+    };
+    if values.next().is_some() {
+        return Err(ApiError::bad_request(
+            "Idempotency-Key must be supplied exactly once".to_string(),
+        ));
+    }
+    let bytes = value.as_bytes();
+    if bytes.is_empty() || bytes.len() > MAX_IDEMPOTENCY_KEY_BYTES {
+        return Err(ApiError::bad_request(format!(
+            "Idempotency-Key must contain between 1 and {MAX_IDEMPOTENCY_KEY_BYTES} bytes"
+        )));
+    }
+    if !bytes.iter().all(|byte| (0x21..=0x7e).contains(byte)) {
+        return Err(ApiError::bad_request(
+            "Idempotency-Key must contain visible ASCII characters without whitespace".to_string(),
+        ));
+    }
+    let request_json = serde_json::to_vec(request)
+        .map_err(|error| ApiError::internal(format!("failed to fingerprint request: {error}")))?;
+    let request_hash = format!("{:x}", Sha256::digest(request_json));
+    let key = std::str::from_utf8(bytes)
+        .map_err(|_| ApiError::bad_request("Idempotency-Key must be valid ASCII".to_string()))?;
+    Ok(Some(IdempotencyRequest::new(scope, key, request_hash)))
 }
 
 fn parse_ticket_id(value: &str) -> Result<TicketId, ApiError> {
@@ -1529,6 +1593,129 @@ fn parse_ticket_id(value: &str) -> Result<TicketId, ApiError> {
 
 fn parse_run_id(value: &str) -> Result<RunId, ApiError> {
     RunId::from_str(value).map_err(|error| ApiError::bad_request(error.to_string()))
+}
+
+fn parse_ticket_page_request(query: &TicketListQuery) -> Result<TicketPageRequest, ApiError> {
+    let limit = match query.limit.as_deref() {
+        Some(value) => value.parse::<usize>().map_err(|_| {
+            ApiError::bad_request(format!(
+                "ticket page limit must be an integer between 1 and {MAX_TICKET_PAGE_SIZE}"
+            ))
+        })?,
+        None => DEFAULT_TICKET_PAGE_SIZE,
+    };
+    if !(1..=MAX_TICKET_PAGE_SIZE).contains(&limit) {
+        return Err(ApiError::bad_request(format!(
+            "ticket page limit must be between 1 and {MAX_TICKET_PAGE_SIZE}"
+        )));
+    }
+
+    let status = query
+        .status
+        .as_deref()
+        .map(parse_ticket_status_filter)
+        .transpose()?;
+    let source = query
+        .source
+        .as_deref()
+        .map(parse_ticket_source_filter)
+        .transpose()?;
+    let cursor = query
+        .cursor
+        .as_deref()
+        .map(decode_ticket_cursor)
+        .transpose()?;
+    if cursor.is_some_and(|cursor| cursor.status != status || cursor.source != source) {
+        return Err(ApiError::bad_request(
+            "ticket page cursor does not match the requested filters".to_string(),
+        ));
+    }
+
+    Ok(TicketPageRequest {
+        after_ordinal: cursor.map(|cursor| cursor.ordinal),
+        limit,
+        status,
+        source,
+    })
+}
+
+fn parse_ticket_status_filter(value: &str) -> Result<TicketStatus, ApiError> {
+    serde_json::from_value(Value::String(value.to_string()))
+        .map_err(|_| ApiError::bad_request(format!("invalid ticket status filter: {value}")))
+}
+
+fn parse_ticket_source_filter(value: &str) -> Result<TicketSource, ApiError> {
+    serde_json::from_value(Value::String(value.to_string()))
+        .map_err(|_| ApiError::bad_request(format!("invalid ticket source filter: {value}")))
+}
+
+fn encode_ticket_cursor(
+    ordinal: i64,
+    status: Option<TicketStatus>,
+    source: Option<TicketSource>,
+) -> String {
+    format!(
+        "{TICKET_CURSOR_PREFIX}{ordinal:016x}-{}-{}",
+        cursor_filter_name(status),
+        cursor_filter_name(source)
+    )
+}
+
+fn cursor_filter_name<T: Serialize>(value: Option<T>) -> String {
+    value.map_or_else(
+        || "0".to_string(),
+        |value| {
+            serde_json::to_value(value)
+                .expect("ticket cursor filters serialize")
+                .as_str()
+                .expect("ticket cursor filters serialize as strings")
+                .to_string()
+        },
+    )
+}
+
+fn decode_ticket_cursor(cursor: &str) -> Result<TicketCursor, ApiError> {
+    let Some(encoded) = cursor.strip_prefix(TICKET_CURSOR_PREFIX) else {
+        return Err(ApiError::bad_request(
+            "invalid ticket page cursor".to_string(),
+        ));
+    };
+    let mut parts = encoded.split('-');
+    let ordinal = parts.next().unwrap_or_default();
+    let status = parts.next().unwrap_or_default();
+    let source = parts.next().unwrap_or_default();
+    if parts.next().is_some()
+        || ordinal.len() != 16
+        || !ordinal
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(ApiError::bad_request(
+            "invalid ticket page cursor".to_string(),
+        ));
+    }
+    let ordinal = i64::from_str_radix(ordinal, 16)
+        .map_err(|_| ApiError::bad_request("invalid ticket page cursor".to_string()))?;
+    if ordinal < 0 {
+        return Err(ApiError::bad_request(
+            "invalid ticket page cursor".to_string(),
+        ));
+    }
+    let status = if status == "0" {
+        None
+    } else {
+        Some(parse_ticket_status_filter(status)?)
+    };
+    let source = if source == "0" {
+        None
+    } else {
+        Some(parse_ticket_source_filter(source)?)
+    };
+    Ok(TicketCursor {
+        ordinal,
+        status,
+        source,
+    })
 }
 
 fn parse_configured_approval_policy(value: &str) -> Result<ApprovalPolicy, ApiError> {
@@ -1542,6 +1729,116 @@ fn parse_configured_approval_policy(value: &str) -> Result<ApprovalPolicy, ApiEr
 fn validate_tea_configuration(config: &TeaConfiguration) -> Result<(), ApiError> {
     parse_configured_approval_policy(&config.human_ticket_default_approval_policy)?;
     parse_configured_approval_policy(&config.hook_ticket_default_approval_policy)?;
+    Ok(())
+}
+
+fn validate_max_bytes(field: &str, value: &str, max_bytes: usize) -> Result<(), ApiError> {
+    if value.len() > max_bytes {
+        return Err(ApiError::bad_request(format!(
+            "{field} must be at most {max_bytes} UTF-8 bytes"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_optional_max_bytes(
+    field: &str,
+    value: Option<&String>,
+    max_bytes: usize,
+) -> Result<(), ApiError> {
+    if let Some(value) = value {
+        validate_max_bytes(field, value, max_bytes)?;
+    }
+    Ok(())
+}
+
+fn validate_ticket_labels(labels: &[String]) -> Result<(), ApiError> {
+    if labels.len() > MAX_TICKET_LABELS {
+        return Err(ApiError::bad_request(format!(
+            "ticket labels must contain at most {MAX_TICKET_LABELS} items"
+        )));
+    }
+    for label in labels {
+        validate_max_bytes("ticket label", label, MAX_TICKET_LABEL_BYTES)?;
+    }
+    Ok(())
+}
+
+fn validate_create_ticket_request(request: &CreateTicketRequest) -> Result<(), ApiError> {
+    validate_max_bytes("ticket title", &request.title, MAX_TICKET_TITLE_BYTES)?;
+    validate_max_bytes(
+        "ticket description",
+        &request.description,
+        MAX_TICKET_DESCRIPTION_BYTES,
+    )?;
+    validate_optional_max_bytes(
+        "ticket priority",
+        request.priority.as_ref(),
+        MAX_TICKET_PRIORITY_BYTES,
+    )?;
+    validate_ticket_labels(&request.labels)
+}
+
+fn validate_edit_ticket_request(request: &EditTicketRequest) -> Result<(), ApiError> {
+    validate_optional_max_bytes(
+        "ticket title",
+        request.title.as_ref(),
+        MAX_TICKET_TITLE_BYTES,
+    )?;
+    validate_optional_max_bytes(
+        "ticket description",
+        request.description.as_ref(),
+        MAX_TICKET_DESCRIPTION_BYTES,
+    )?;
+    validate_optional_max_bytes(
+        "ticket priority",
+        request.priority.as_ref(),
+        MAX_TICKET_PRIORITY_BYTES,
+    )?;
+    if let Some(labels) = &request.labels {
+        validate_ticket_labels(labels)?;
+    }
+    Ok(())
+}
+
+fn validate_hook_intake_request(request: &HookIntakeRequest) -> Result<(), ApiError> {
+    validate_max_bytes("Hook source", &request.source, MAX_HOOK_SOURCE_BYTES)?;
+    validate_max_bytes("Hook text", &request.text, MAX_HOOK_TEXT_BYTES)?;
+
+    for (field, value) in [
+        ("Hook active_window", request.context.active_window.as_ref()),
+        (
+            "Hook selection_text",
+            request.context.selection_text.as_ref(),
+        ),
+        ("Hook ocr_text", request.context.ocr_text.as_ref()),
+        (
+            "Hook screenshot_ref",
+            request.context.screenshot_ref.as_ref(),
+        ),
+        ("Hook cwd", request.context.cwd.as_ref()),
+        ("Hook app", request.context.app.as_ref()),
+    ] {
+        validate_optional_max_bytes(field, value, MAX_HOOK_CONTEXT_FIELD_BYTES)?;
+    }
+
+    if request.attachments.len() > MAX_HOOK_ATTACHMENTS {
+        return Err(ApiError::bad_request(format!(
+            "Hook attachments must contain at most {MAX_HOOK_ATTACHMENTS} items"
+        )));
+    }
+    for attachment in &request.attachments {
+        validate_max_bytes(
+            "Hook attachment kind",
+            &attachment.kind,
+            MAX_HOOK_ATTACHMENT_KIND_BYTES,
+        )?;
+        validate_max_bytes(
+            "Hook attachment reference",
+            &attachment.reference,
+            MAX_HOOK_ATTACHMENT_REFERENCE_BYTES,
+        )?;
+    }
     Ok(())
 }
 
@@ -1599,10 +1896,11 @@ impl ApiError {
         }
     }
 
-    fn internal(message: impl Into<String>) -> Self {
+    fn internal(diagnostic: impl std::fmt::Display) -> Self {
+        eprintln!("Tea API internal error: {diagnostic}");
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
-            message: message.into(),
+            message: "internal server error".to_string(),
         }
     }
 }
@@ -1613,29 +1911,34 @@ impl From<StoreError> for ApiError {
             StoreError::TicketNotFound | StoreError::RunNotFound => {
                 Self::not_found(error.to_string())
             }
-            StoreError::EvidenceRequired => Self::forbidden(error.to_string()),
-            StoreError::InvalidTransition(_) => Self::conflict(error.to_string()),
+            StoreError::EvidenceRequired | StoreError::ApprovalRequired => {
+                Self::forbidden(error.to_string())
+            }
+            StoreError::InvalidTransition(_)
+            | StoreError::InvalidRunTransition(_)
+            | StoreError::RunConflict(_)
+            | StoreError::IdempotencyConflict => Self::conflict(error.to_string()),
+            StoreError::InvalidPageRequest(_) => Self::bad_request(error.to_string()),
             StoreError::LockPoisoned
             | StoreError::Database(_)
             | StoreError::Codec(_)
             | StoreError::Io(_)
-            | StoreError::UnsupportedSchemaVersion { .. } => Self {
-                status: StatusCode::INTERNAL_SERVER_ERROR,
-                message: error.to_string(),
-            },
+            | StoreError::UnsupportedSchemaVersion { .. } => Self::internal(error),
         }
     }
 }
 
 impl From<BrainError> for ApiError {
     fn from(error: BrainError) -> Self {
-        Self::bad_gateway(error.to_string())
+        eprintln!("Tea API BrainProvider error: {error}");
+        Self::bad_gateway("BrainProvider unavailable")
     }
 }
 
 impl From<tea_loom::LoomError> for ApiError {
     fn from(error: tea_loom::LoomError) -> Self {
-        Self::bad_gateway(error.to_string())
+        eprintln!("Tea API Loom error: {error}");
+        Self::bad_gateway("Loom service unavailable")
     }
 }
 
@@ -1652,2363 +1955,4 @@ impl IntoResponse for ApiError {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use axum::body::Body;
-    use axum::http::Request;
-    use tea_store::SqliteTicketStore;
-    use tower::Service;
-    use tower::ServiceExt;
-
-    #[tokio::test]
-    async fn health_returns_ok() {
-        let app = test_router();
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/health")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-    }
-
-    #[tokio::test]
-    async fn v1_ticket_metrics_aggregates_in_one_response() {
-        let store = InMemoryTicketStore::default();
-        let ticket = store
-            .create_ticket(
-                "Metrics".to_string(),
-                "body".to_string(),
-                tea_core::TicketSource::Human,
-                tea_core::ActorRef::human("vmjcv"),
-            )
-            .await
-            .unwrap();
-        store
-            .add_comment(
-                &ticket.id,
-                tea_core::ActorRef::human("vmjcv"),
-                "note".to_string(),
-            )
-            .await
-            .unwrap();
-
-        let app = router(AppState::new(
-            store.clone(),
-            tea_brain::TemplateBrainProvider,
-            tea_loom::MockLoomClient,
-            AuthConfig::new("dev-token".to_string()),
-        ));
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/v1/tickets/metrics")
-                    .header("authorization", "Bearer dev-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let body: Value = serde_json::from_slice(&bytes).unwrap();
-        let entries = body.as_array().expect("metrics is an array");
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0]["ticket_id"], json!(ticket.id));
-        assert_eq!(entries[0]["comments_count"], 1);
-        assert_eq!(entries[0]["runs_count"], 0);
-        assert_eq!(entries[0]["latest_comment"]["body"], "note");
-    }
-
-    #[tokio::test]
-    async fn v1_ticket_bundle_returns_detail_in_one_response() {
-        let store = InMemoryTicketStore::default();
-        let ticket = store
-            .create_ticket(
-                "Bundle".to_string(),
-                "body".to_string(),
-                tea_core::TicketSource::Human,
-                tea_core::ActorRef::human("vmjcv"),
-            )
-            .await
-            .unwrap();
-        store
-            .add_comment(
-                &ticket.id,
-                tea_core::ActorRef::human("vmjcv"),
-                "note".to_string(),
-            )
-            .await
-            .unwrap();
-
-        let app = router(AppState::new(
-            store.clone(),
-            tea_brain::TemplateBrainProvider,
-            tea_loom::MockLoomClient,
-            AuthConfig::new("dev-token".to_string()),
-        ));
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/v1/tickets/{}/bundle", ticket.id))
-                    .header("authorization", "Bearer dev-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let body: Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(body["ticket"]["id"], json!(ticket.id));
-        assert_eq!(
-            body["comments"].as_array().expect("comments array").len(),
-            1
-        );
-        assert_eq!(body["comments"][0]["body"], "note");
-        assert!(!body["events"].as_array().expect("events array").is_empty());
-        assert!(body["analysis"].is_null());
-        assert!(body["plan"].is_null());
-    }
-
-    #[tokio::test]
-    async fn status_reports_memory_store_metadata() {
-        let app = test_router();
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/v1/status")
-                    .header("authorization", "Bearer dev-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let body: Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(body["service"], "tea");
-        assert_eq!(body["status"], "ok");
-        assert_eq!(
-            body["store"],
-            json!({
-                "backend": "memory",
-                "schema_version": null,
-                "supported_schema_version": null
-            })
-        );
-    }
-
-    #[tokio::test]
-    async fn v1_status_requires_auth() {
-        let app = test_router();
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/v1/status")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn v1_read_endpoints_require_auth() {
-        let mut app = test_router();
-        let ticket_response = app
-            .call(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/tickets")
-                    .header("authorization", "Bearer dev-token")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({
-                            "title": "Auth read smoke",
-                            "description": "Verify read endpoints require bearer auth."
-                        })
-                        .to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(ticket_response.status(), StatusCode::OK);
-        let ticket: tea_core::Ticket =
-            serde_json::from_slice(&body_bytes(ticket_response).await).unwrap();
-
-        for uri in [
-            "/v1/configuration".to_string(),
-            "/v1/tickets".to_string(),
-            format!("/v1/tickets/{}", ticket.id),
-            format!("/v1/tickets/{}/comments", ticket.id),
-            format!("/v1/tickets/{}/events", ticket.id),
-            format!("/v1/tickets/{}/runs", ticket.id),
-            format!("/v1/tickets/{}/export/json", ticket.id),
-            format!("/v1/tickets/{}/export/markdown", ticket.id),
-        ] {
-            let response = app
-                .call(Request::builder().uri(&uri).body(Body::empty()).unwrap())
-                .await
-                .unwrap();
-            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "uri={uri}");
-        }
-    }
-
-    #[tokio::test]
-    async fn authenticated_v1_read_endpoints_still_work() {
-        let mut app = test_router();
-        let ticket_response = app
-            .call(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/tickets")
-                    .header("authorization", "Bearer dev-token")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({
-                            "title": "Authenticated read smoke",
-                            "description": "Verify read endpoints still work with bearer auth."
-                        })
-                        .to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(ticket_response.status(), StatusCode::OK);
-        let ticket: tea_core::Ticket =
-            serde_json::from_slice(&body_bytes(ticket_response).await).unwrap();
-
-        for uri in [
-            "/v1/status".to_string(),
-            "/v1/configuration".to_string(),
-            "/v1/tickets".to_string(),
-            format!("/v1/tickets/{}", ticket.id),
-            format!("/v1/tickets/{}/comments", ticket.id),
-            format!("/v1/tickets/{}/events", ticket.id),
-            format!("/v1/tickets/{}/runs", ticket.id),
-            format!("/v1/tickets/{}/export/json", ticket.id),
-            format!("/v1/tickets/{}/export/markdown", ticket.id),
-        ] {
-            let response = app
-                .call(
-                    Request::builder()
-                        .uri(&uri)
-                        .header("authorization", "Bearer dev-token")
-                        .body(Body::empty())
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            assert_eq!(response.status(), StatusCode::OK, "uri={uri}");
-        }
-    }
-
-    #[tokio::test]
-    async fn status_reports_sqlite_schema_metadata() {
-        let path = temp_store_path("tea-api-status-sqlite");
-        let store = SqliteTicketStore::open(&path).unwrap();
-        let app = router(AppState::new(
-            store,
-            tea_brain::TemplateBrainProvider,
-            tea_loom::MockLoomClient,
-            AuthConfig::new("dev-token".to_string()),
-        ));
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/v1/status")
-                    .header("authorization", "Bearer dev-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let body: Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(
-            body["store"],
-            json!({
-                "backend": "sqlite",
-                "schema_version": 1,
-                "supported_schema_version": 1
-            })
-        );
-
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[tokio::test]
-    async fn status_reports_configuration_source() {
-        let app = test_router();
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/v1/status")
-                    .header("authorization", "Bearer dev-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let body: Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(body["configuration_source"], "local");
-        assert_eq!(body["configuration"]["owner"], "tea");
-    }
-
-    #[tokio::test]
-    async fn configuration_put_updates_local_config() {
-        let mut app = test_router();
-        let response = app
-            .call(
-                Request::builder()
-                    .method("PUT")
-                    .uri("/v1/configuration")
-                    .header("authorization", "Bearer dev-token")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({
-                            "notifications_enabled": false,
-                            "human_ticket_default_approval_policy": "human_before_completion",
-                            "hook_ticket_default_approval_policy": "plan_only"
-                        })
-                        .to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let body: Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(body["configuration_source"], "local");
-        assert_eq!(body["config"]["notifications_enabled"], false);
-        assert_eq!(
-            body["config"]["human_ticket_default_approval_policy"],
-            "human_before_completion"
-        );
-    }
-
-    #[tokio::test]
-    async fn configuration_put_rejects_loom_managed_config() {
-        let state = AppState::new_with_configuration(
-            InMemoryTicketStore::default(),
-            tea_brain::TemplateBrainProvider,
-            tea_loom::MockLoomClient,
-            AuthConfig::new("dev-token".to_string()),
-            ConfigurationRuntime::loom_managed_for_tests("loom://settings/tea"),
-        );
-        let mut app = router(state);
-
-        let response = app
-            .call(
-                Request::builder()
-                    .method("PUT")
-                    .uri("/v1/configuration")
-                    .header("authorization", "Bearer dev-token")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({
-                            "notifications_enabled": false,
-                            "human_ticket_default_approval_policy": "human_before_completion",
-                            "hook_ticket_default_approval_policy": "plan_only"
-                        })
-                        .to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::CONFLICT);
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let body: Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(body["error"], "configuration_managed_by_loom");
-    }
-
-    #[test]
-    fn loom_runtime_config_can_replace_startup_snapshot() {
-        let runtime = ConfigurationRuntime::loom_managed_for_tests("loom://settings/tea");
-        let response = runtime
-            .replace_runtime_config_from_loom(TeaConfiguration {
-                notifications_enabled: false,
-                human_ticket_default_approval_policy: "manual_only".to_string(),
-                hook_ticket_default_approval_policy: "plan_only".to_string(),
-            })
-            .expect("replace Loom runtime config");
-
-        assert_eq!(
-            response.configuration_source,
-            ConfigurationSource::LoomManaged
-        );
-        assert!(!response.config.notifications_enabled);
-        assert_eq!(
-            response.config.human_ticket_default_approval_policy,
-            "manual_only"
-        );
-    }
-
-    #[tokio::test]
-    async fn configuration_put_rejects_unknown_approval_policy() {
-        let mut app = test_router();
-        let response = app
-            .call(
-                Request::builder()
-                    .method("PUT")
-                    .uri("/v1/configuration")
-                    .header("authorization", "Bearer dev-token")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({
-                            "notifications_enabled": true,
-                            "human_ticket_default_approval_policy": "not_a_policy",
-                            "hook_ticket_default_approval_policy": "plan_only"
-                        })
-                        .to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let body: Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(
-            body["error"],
-            "invalid approval policy in Tea configuration: not_a_policy"
-        );
-    }
-
-    #[tokio::test]
-    async fn settings_page_exposes_local_configuration_ui() {
-        let app = test_router();
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/settings")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = body_text(response).await;
-        assert!(body.contains("Tea Settings"));
-        assert!(body.contains("data-configuration-source=\"local\""));
-        assert!(body.contains("notifications_enabled"));
-        assert!(body.contains("human_ticket_default_approval_policy"));
-        assert!(body.contains("hook_ticket_default_approval_policy"));
-        assert!(body.contains("Save Tea local settings"));
-    }
-
-    #[tokio::test]
-    async fn settings_page_links_to_loom_when_configuration_is_loom_managed() {
-        let state = AppState::new_with_configuration(
-            InMemoryTicketStore::default(),
-            tea_brain::TemplateBrainProvider,
-            tea_loom::MockLoomClient,
-            AuthConfig::new("dev-token".to_string()),
-            ConfigurationRuntime::loom_managed_for_tests("loom://settings/tea"),
-        );
-        let app = router(state);
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/settings")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = body_text(response).await;
-        assert!(body.contains("data-configuration-source=\"loom-managed\""));
-        assert!(body.contains("This Tea configuration is managed by Loom"));
-        assert!(body.contains("href=\"loom://settings/tea\""));
-        assert!(body.contains("Open Loom Tea settings"));
-        assert!(body.contains("disabled"));
-    }
-
-    #[tokio::test]
-    async fn create_ticket_uses_configured_human_default_policy() {
-        let mut app = test_router();
-        let config_response = app
-            .call(
-                Request::builder()
-                    .method("PUT")
-                    .uri("/v1/configuration")
-                    .header("authorization", "Bearer dev-token")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({
-                            "notifications_enabled": true,
-                            "human_ticket_default_approval_policy": "manual_only",
-                            "hook_ticket_default_approval_policy": "plan_only"
-                        })
-                        .to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(config_response.status(), StatusCode::OK);
-
-        let response = app
-            .call(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/tickets")
-                    .header("authorization", "Bearer dev-token")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({"title":"Configured","description":"Use configured policy default"})
-                            .to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let ticket: tea_core::Ticket = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(ticket.approval_policy, tea_core::ApprovalPolicy::ManualOnly);
-        assert!(ticket.labels.contains(&"policy:manual-only".to_string()));
-    }
-
-    #[tokio::test]
-    async fn create_ticket_honors_requested_approval_policy() {
-        let app = test_router();
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/tickets")
-                    .header("authorization", "Bearer dev-token")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({
-                            "title": "Explicit policy",
-                            "description": "Operator picked a policy on create",
-                            "approval_policy": "manual_only"
-                        })
-                        .to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let ticket: tea_core::Ticket = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(ticket.approval_policy, tea_core::ApprovalPolicy::ManualOnly);
-    }
-
-    #[tokio::test]
-    async fn create_ticket_honors_requested_priority_and_labels() {
-        let app = test_router();
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/tickets")
-                    .header("authorization", "Bearer dev-token")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({
-                            "title": "Prioritized",
-                            "description": "Operator set priority and labels on create",
-                            "priority": "high",
-                            "labels": ["area:desktop", "  needs-triage  ", "area:desktop", ""]
-                        })
-                        .to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let ticket: tea_core::Ticket = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(ticket.priority, "high");
-        assert!(ticket.labels.contains(&"area:desktop".to_string()));
-        assert!(ticket.labels.contains(&"needs-triage".to_string()));
-        // Trimmed duplicates and blank labels are dropped.
-        assert_eq!(
-            ticket
-                .labels
-                .iter()
-                .filter(|label| label.as_str() == "area:desktop")
-                .count(),
-            1
-        );
-        assert!(!ticket.labels.iter().any(|label| label.is_empty()));
-        // Source and policy labels are still present.
-        assert!(ticket.labels.iter().any(|label| label == "source:human"));
-    }
-
-    #[tokio::test]
-    async fn patch_ticket_edits_fields_and_preserves_system_labels() {
-        let mut app = test_router();
-        let response = app
-            .call(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/tickets")
-                    .header("authorization", "Bearer dev-token")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({
-                            "title": "Original title",
-                            "description": "Original body",
-                            "labels": ["area:auth"]
-                        })
-                        .to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let created: tea_core::Ticket = serde_json::from_slice(&bytes).unwrap();
-
-        let response = app
-            .call(
-                Request::builder()
-                    .method("PATCH")
-                    .uri(format!("/v1/tickets/{}", created.id))
-                    .header("authorization", "Bearer dev-token")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({
-                            "title": "Edited title",
-                            "priority": "high",
-                            "labels": ["area:desktop", "needs-review"]
-                        })
-                        .to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let edited: tea_core::Ticket = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(edited.title, "Edited title");
-        // Description was not provided, so it is unchanged.
-        assert_eq!(edited.description, "Original body");
-        assert_eq!(edited.priority, "high");
-        // New operator labels replaced the old ones.
-        assert!(edited.labels.iter().any(|label| label == "area:desktop"));
-        assert!(edited.labels.iter().any(|label| label == "needs-review"));
-        assert!(!edited.labels.iter().any(|label| label == "area:auth"));
-        // System labels are preserved.
-        assert!(edited.labels.iter().any(|label| label == "source:human"));
-        assert!(edited
-            .labels
-            .iter()
-            .any(|label| label.starts_with("policy:")));
-    }
-
-    #[tokio::test]
-    async fn patch_ticket_rejects_terminal_ticket() {
-        let mut app = test_router();
-        let response = app
-            .call(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/tickets")
-                    .header("authorization", "Bearer dev-token")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({"title": "To cancel", "description": "Will be cancelled"})
-                            .to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let created: tea_core::Ticket = serde_json::from_slice(&bytes).unwrap();
-
-        let response = app
-            .call(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/v1/tickets/{}/cancel", created.id))
-                    .header("authorization", "Bearer dev-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let response = app
-            .call(
-                Request::builder()
-                    .method("PATCH")
-                    .uri(format!("/v1/tickets/{}", created.id))
-                    .header("authorization", "Bearer dev-token")
-                    .header("content-type", "application/json")
-                    .body(Body::from(json!({"title": "too late"}).to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::CONFLICT);
-    }
-
-    #[tokio::test]
-    async fn create_ticket_rejects_invalid_approval_policy() {
-        let app = test_router();
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/tickets")
-                    .header("authorization", "Bearer dev-token")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({
-                            "title": "Bad policy",
-                            "description": "Invalid approval policy value",
-                            "approval_policy": "not_a_real_policy"
-                        })
-                        .to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-    }
-
-    #[tokio::test]
-    async fn hook_intake_uses_configured_hook_default_policy_label() {
-        let mut app = test_router();
-        let config_response = app
-            .call(
-                Request::builder()
-                    .method("PUT")
-                    .uri("/v1/configuration")
-                    .header("authorization", "Bearer dev-token")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({
-                            "notifications_enabled": true,
-                            "human_ticket_default_approval_policy": "human_before_execute",
-                            "hook_ticket_default_approval_policy": "human_before_execute"
-                        })
-                        .to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(config_response.status(), StatusCode::OK);
-
-        let response = app
-            .call(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/intake/hook")
-                    .header("authorization", "Bearer dev-token")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({
-                            "source":"hook",
-                            "text":"Please analyze current failure",
-                            "context":{
-                                "active_window":"PowerShell",
-                                "selection_text":"cargo test failed",
-                                "ocr_text":null,
-                                "screenshot_ref":null,
-                                "cwd":"C:\\repo",
-                                "app":"terminal"
-                            },
-                            "attachments":[]
-                        })
-                        .to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let ticket: tea_core::Ticket = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(
-            ticket.approval_policy,
-            tea_core::ApprovalPolicy::HumanBeforeExecute
-        );
-        assert!(ticket
-            .labels
-            .contains(&"policy:human-before-execute".to_string()));
-        assert!(!ticket.labels.contains(&"policy:plan-only".to_string()));
-        assert!(ticket.labels.contains(&"context:untrusted".to_string()));
-    }
-
-    #[tokio::test]
-    async fn create_ticket_requires_auth() {
-        let app = test_router();
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/tickets")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({"title":"Smoke","description":"Body"}).to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn create_and_list_ticket() {
-        let mut app = test_router();
-        let response = app
-            .call(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/tickets")
-                    .header("authorization", "Bearer dev-token")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({"title":"Smoke","description":"Create a safe plan"}).to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let response = app
-            .call(
-                Request::builder()
-                    .uri("/v1/tickets")
-                    .header("authorization", "Bearer dev-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-    }
-
-    #[tokio::test]
-    async fn decompose_ticket_stores_analysis_and_plan_from_one_provider_proposal() {
-        let observed_store = InMemoryTicketStore::default();
-        let state = AppState::new(
-            observed_store.clone(),
-            tea_brain::TemplateBrainProvider,
-            tea_loom::MockLoomClient,
-            AuthConfig::new("dev-token".to_string()),
-        );
-        let mut app = router(state);
-        let response = app
-            .call(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/tickets")
-                    .header("authorization", "Bearer dev-token")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({
-                            "title": "Decompose",
-                            "description": "Use one BrainProvider proposal for analysis and plan."
-                        })
-                        .to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let ticket: tea_core::Ticket = serde_json::from_slice(&bytes).unwrap();
-
-        let response = app
-            .call(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/v1/tickets/{}/decompose", ticket.id))
-                    .header("authorization", "Bearer dev-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let body: Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(body["provider"]["capability"], "tea.ticket.decompose.v1");
-        assert_eq!(body["analysis"]["intent"], "engineering_work_order");
-        assert_eq!(
-            body["analysis"]["recommended_workflow"],
-            "loom.tea_ticket_decompose.v1"
-        );
-        assert!(body["plan"]["steps"].as_array().unwrap().len() >= 3);
-        assert_eq!(body["plan"]["requires_approval_before_execute"], true);
-
-        let stored_ticket = observed_store.get_ticket(&ticket.id).await.unwrap();
-        assert_eq!(stored_ticket.status, TicketStatus::AwaitingApproval);
-        let events = observed_store.ticket_events(&ticket.id).await.unwrap();
-        assert!(events
-            .iter()
-            .any(|event| event.kind == tea_core::TicketEventKind::TicketAnalyzed));
-        assert!(events
-            .iter()
-            .any(|event| event.kind == tea_core::TicketEventKind::PlanProposed));
-    }
-
-    #[tokio::test]
-    async fn analysis_and_plan_records_are_readable_after_decompose() {
-        let mut app = test_router();
-        let response = app
-            .call(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/tickets")
-                    .header("authorization", "Bearer dev-token")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({
-                            "title": "Readable records",
-                            "description": "Analysis and plan must be readable after decompose."
-                        })
-                        .to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let ticket: tea_core::Ticket = serde_json::from_slice(&bytes).unwrap();
-
-        // Before decompose: records read back as JSON null, not 404.
-        let response = app
-            .call(
-                Request::builder()
-                    .method("GET")
-                    .uri(format!("/v1/tickets/{}/analysis", ticket.id))
-                    .header("authorization", "Bearer dev-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let body: Value = serde_json::from_slice(&bytes).unwrap();
-        assert!(body.is_null());
-
-        let response = app
-            .call(
-                Request::builder()
-                    .method("GET")
-                    .uri(format!("/v1/tickets/{}/plan", ticket.id))
-                    .header("authorization", "Bearer dev-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let body: Value = serde_json::from_slice(&bytes).unwrap();
-        assert!(body.is_null());
-
-        // Generate the records.
-        let response = app
-            .call(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/v1/tickets/{}/decompose", ticket.id))
-                    .header("authorization", "Bearer dev-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-
-        // After decompose: GET returns the stored analysis and plan.
-        let response = app
-            .call(
-                Request::builder()
-                    .method("GET")
-                    .uri(format!("/v1/tickets/{}/analysis", ticket.id))
-                    .header("authorization", "Bearer dev-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let body: Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(body["intent"], "engineering_work_order");
-
-        let response = app
-            .call(
-                Request::builder()
-                    .method("GET")
-                    .uri(format!("/v1/tickets/{}/plan", ticket.id))
-                    .header("authorization", "Bearer dev-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let body: Value = serde_json::from_slice(&bytes).unwrap();
-        assert!(body["steps"].as_array().unwrap().len() >= 3);
-    }
-
-    #[tokio::test]
-    async fn analysis_and_plan_records_require_auth() {
-        let app = test_router();
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri(format!("/v1/tickets/{}/analysis", TicketId::new()))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn run_requires_approval() {
-        let mut app = test_router();
-        let response = app
-            .call(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/tickets")
-                    .header("authorization", "Bearer dev-token")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({"title":"Smoke","description":"Create a safe plan"}).to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let ticket: tea_core::Ticket = serde_json::from_slice(&bytes).unwrap();
-
-        let response = app
-            .call(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/v1/tickets/{}/run", ticket.id))
-                    .header("authorization", "Bearer dev-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    }
-
-    #[tokio::test]
-    async fn accept_requires_run_evidence() {
-        let mut app = test_router();
-        let response = app
-            .call(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/tickets")
-                    .header("authorization", "Bearer dev-token")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({"title":"Review","description":"Accept only after evidence exists"})
-                            .to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let ticket: tea_core::Ticket = serde_json::from_slice(&bytes).unwrap();
-
-        let response = app
-            .call(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/v1/tickets/{}/accept", ticket.id))
-                    .header("authorization", "Bearer dev-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let body: Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(body["error"], "ticket transition requires evidence");
-    }
-
-    #[tokio::test]
-    async fn accept_after_run_evidence_succeeds() {
-        let mut app = test_router();
-        let run = create_approved_ticket_and_run(&mut app).await;
-
-        let response = app
-            .call(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/v1/tickets/{}/accept", run.ticket_id))
-                    .header("authorization", "Bearer dev-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let ticket: tea_core::Ticket = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(ticket.status, TicketStatus::Accepted);
-    }
-
-    #[tokio::test]
-    async fn close_honors_completion_approval_policy() {
-        let store = InMemoryTicketStore::default();
-        let ticket = store
-            .create_ticket(
-                "Completion approval".to_string(),
-                "Closing should require a final human decision.".to_string(),
-                TicketSource::Human,
-                ActorRef::human("vmjcv"),
-            )
-            .await
-            .unwrap();
-        store
-            .set_analysis(
-                &ticket.id,
-                ActorRef::system(),
-                tea_core::TicketAnalysis {
-                    intent: "verify completion policy".to_string(),
-                    target_components: vec!["tea_api".to_string()],
-                    target_paths: vec!["Tea/crates/tea_api/src/lib.rs".to_string()],
-                    constraints: vec![],
-                    acceptance_criteria: vec!["close requires approval".to_string()],
-                    missing_context: vec![],
-                    risk_assessment: tea_core::RiskLevel::Low,
-                    confidence: 0.9,
-                    recommended_policy: tea_core::ApprovalPolicy::HumanBeforeCompletion,
-                    recommended_workflow: "manual close".to_string(),
-                },
-            )
-            .await
-            .unwrap();
-        store
-            .add_run(
-                &ticket.id,
-                ActorRef::loom("test-loom"),
-                tea_core::Run {
-                    id: RunId::new(),
-                    ticket_id: ticket.id.clone(),
-                    loom_session_id: Some("test".to_string()),
-                    status: tea_core::RunStatus::Succeeded,
-                    evidence: Some(tea_core::RunEvidence {
-                        summary: "done".to_string(),
-                        commands: vec![],
-                        artifacts: vec![],
-                        risks: vec![],
-                    }),
-                },
-            )
-            .await
-            .unwrap();
-
-        let observed_store = store.clone();
-        let state = AppState::new(
-            store,
-            tea_brain::TemplateBrainProvider,
-            tea_loom::MockLoomClient,
-            AuthConfig::new("dev-token".to_string()),
-        );
-        let mut app = router(state);
-        let response = app
-            .call(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/v1/tickets/{}/close", ticket.id))
-                    .header("authorization", "Bearer dev-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
-        let after_close_attempt = observed_store.get_ticket(&ticket.id).await.unwrap();
-        assert_ne!(after_close_attempt.status, TicketStatus::Closed);
-    }
-
-    #[tokio::test]
-    async fn hook_intake_creates_plan_only_ticket() {
-        let mut app = test_router();
-        let response = app
-            .call(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/intake/hook")
-                    .header("authorization", "Bearer dev-token")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({
-                            "source":"hook",
-                            "text":"Please analyze current failure",
-                            "context":{
-                                "active_window":"PowerShell",
-                                "selection_text":"cargo test failed",
-                                "ocr_text":null,
-                                "screenshot_ref":null,
-                                "cwd":"C:\\repo",
-                                "app":"terminal"
-                            },
-                            "attachments":[]
-                        })
-                        .to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let ticket: tea_core::Ticket = serde_json::from_slice(&bytes).unwrap();
-        assert!(ticket.labels.contains(&"source:hook".to_string()));
-        assert!(ticket.labels.contains(&"policy:plan-only".to_string()));
-        assert!(ticket.labels.contains(&"context:untrusted".to_string()));
-    }
-
-    #[tokio::test]
-    async fn ticket_policy_endpoint_updates_policy_and_appends_event() {
-        let mut app = test_router();
-        let response = app
-            .call(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/tickets")
-                    .header("authorization", "Bearer dev-token")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({"title":"Policy","description":"Override approval policy"})
-                            .to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let ticket: tea_core::Ticket = serde_json::from_slice(&bytes).unwrap();
-
-        let response = app
-            .call(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/v1/tickets/{}/policy", ticket.id))
-                    .header("authorization", "Bearer dev-token")
-                    .header("content-type", "application/json")
-                    .body(Body::from(json!({"mode":"manual_only"}).to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let updated: tea_core::Ticket = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(
-            updated.approval_policy,
-            tea_core::ApprovalPolicy::ManualOnly
-        );
-
-        let events_response = app
-            .call(
-                Request::builder()
-                    .uri(format!("/v1/tickets/{}/events", ticket.id))
-                    .header("authorization", "Bearer dev-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(events_response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(events_response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let events: Vec<tea_core::TicketEvent> = serde_json::from_slice(&bytes).unwrap();
-        assert!(events
-            .iter()
-            .any(|event| event.kind == tea_core::TicketEventKind::PolicyUpdated));
-    }
-
-    #[tokio::test]
-    async fn approve_run_and_close_ticket_with_evidence() {
-        let mut app = test_router();
-        let response = app
-            .call(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/tickets")
-                    .header("authorization", "Bearer dev-token")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({"title":"Smoke","description":"Create a safe plan"}).to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let ticket: tea_core::Ticket = serde_json::from_slice(&bytes).unwrap();
-
-        let approve_response = app
-            .call(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/v1/tickets/{}/approve", ticket.id))
-                    .header("authorization", "Bearer dev-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(approve_response.status(), StatusCode::OK);
-
-        let run_response = app
-            .call(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/v1/tickets/{}/run", ticket.id))
-                    .header("authorization", "Bearer dev-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(run_response.status(), StatusCode::OK);
-
-        let close_response = app
-            .call(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/v1/tickets/{}/close", ticket.id))
-                    .header("authorization", "Bearer dev-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(close_response.status(), StatusCode::OK);
-
-        let events_response = app
-            .call(
-                Request::builder()
-                    .uri(format!("/v1/tickets/{}/events", ticket.id))
-                    .header("authorization", "Bearer dev-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let bytes = axum::body::to_bytes(events_response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let events: Vec<tea_core::TicketEvent> = serde_json::from_slice(&bytes).unwrap();
-        assert!(events
-            .iter()
-            .any(|event| event.kind == tea_core::TicketEventKind::ApprovalGranted));
-        assert!(events
-            .iter()
-            .any(|event| event.kind == tea_core::TicketEventKind::RunSucceeded));
-        assert!(events
-            .iter()
-            .any(|event| event.kind == tea_core::TicketEventKind::EvidenceAttached));
-        assert!(events
-            .iter()
-            .any(|event| event.kind == tea_core::TicketEventKind::TicketClosed));
-    }
-
-    #[tokio::test]
-    async fn run_stop_endpoint_stops_the_addressed_run() {
-        let mut app = test_router();
-        let run = create_approved_ticket_and_run(&mut app).await;
-
-        let response = app
-            .call(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/v1/runs/{}/stop", run.id))
-                    .header("authorization", "Bearer dev-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let stopped: tea_core::Run = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(stopped.id, run.id);
-        assert_eq!(stopped.ticket_id, run.ticket_id);
-        assert_eq!(stopped.status, tea_core::RunStatus::Stopped);
-    }
-
-    #[tokio::test]
-    async fn run_stop_rejects_mismatched_loom_response_id() {
-        use axum::{
-            extract::State as AxumState, routing::post, Json as AxumJson, Router as AxumRouter,
-        };
-
-        async fn stop_handler(
-            AxumState(wrong_run): AxumState<tea_core::Run>,
-        ) -> AxumJson<tea_core::Run> {
-            let mut run = wrong_run;
-            run.status = tea_core::RunStatus::Stopped;
-            AxumJson(run)
-        }
-
-        let store = InMemoryTicketStore::default();
-        let ticket = store
-            .create_ticket(
-                "Stop mismatch".to_string(),
-                "Loom must not redirect run actions to another run.".to_string(),
-                TicketSource::Human,
-                ActorRef::human("vmjcv"),
-            )
-            .await
-            .unwrap();
-        let addressed_run = tea_core::Run {
-            id: RunId::new(),
-            ticket_id: ticket.id.clone(),
-            loom_session_id: Some("addressed".to_string()),
-            status: tea_core::RunStatus::Running,
-            evidence: None,
-        };
-        let wrong_run = tea_core::Run {
-            id: RunId::new(),
-            ticket_id: ticket.id.clone(),
-            loom_session_id: Some("wrong".to_string()),
-            status: tea_core::RunStatus::Running,
-            evidence: None,
-        };
-        store
-            .add_run(
-                &ticket.id,
-                ActorRef::loom("test-loom"),
-                addressed_run.clone(),
-            )
-            .await
-            .unwrap();
-        store
-            .add_run(&ticket.id, ActorRef::loom("test-loom"), wrong_run.clone())
-            .await
-            .unwrap();
-
-        let loom_app = AxumRouter::new()
-            .route(
-                &format!("/v1/runs/{}/stop", addressed_run.id),
-                post(stop_handler),
-            )
-            .with_state(wrong_run.clone());
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            axum::serve(listener, loom_app).await.unwrap();
-        });
-
-        let observed_store = store.clone();
-        let state = AppState::new(
-            store,
-            tea_brain::TemplateBrainProvider,
-            tea_loom::HttpLoomClient::new(format!("http://{address}"), None),
-            AuthConfig::new("dev-token".to_string()),
-        );
-        let mut app = router(state);
-
-        let response = app
-            .call(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/v1/runs/{}/stop", addressed_run.id))
-                    .header("authorization", "Bearer dev-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::CONFLICT);
-        assert_eq!(
-            observed_store.get_run(&wrong_run.id).await.unwrap().status,
-            tea_core::RunStatus::Running
-        );
-    }
-
-    #[tokio::test]
-    async fn run_retry_endpoint_retries_the_addressed_run() {
-        let mut app = test_router();
-        let run = create_approved_ticket_and_run(&mut app).await;
-
-        let response = app
-            .call(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/v1/runs/{}/retry", run.id))
-                    .header("authorization", "Bearer dev-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let retrying: tea_core::Run = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(retrying.id, run.id);
-        assert_eq!(retrying.ticket_id, run.ticket_id);
-        assert_eq!(retrying.status, tea_core::RunStatus::Retrying);
-    }
-
-    #[tokio::test]
-    async fn run_retry_rejects_mismatched_loom_response_id() {
-        use axum::{
-            extract::State as AxumState, routing::post, Json as AxumJson, Router as AxumRouter,
-        };
-
-        async fn retry_handler(
-            AxumState(wrong_run): AxumState<tea_core::Run>,
-        ) -> AxumJson<tea_core::Run> {
-            let mut run = wrong_run;
-            run.status = tea_core::RunStatus::Retrying;
-            AxumJson(run)
-        }
-
-        let store = InMemoryTicketStore::default();
-        let ticket = store
-            .create_ticket(
-                "Retry mismatch".to_string(),
-                "Loom must not redirect run actions to another run.".to_string(),
-                TicketSource::Human,
-                ActorRef::human("vmjcv"),
-            )
-            .await
-            .unwrap();
-        let addressed_run = tea_core::Run {
-            id: RunId::new(),
-            ticket_id: ticket.id.clone(),
-            loom_session_id: Some("addressed".to_string()),
-            status: tea_core::RunStatus::Running,
-            evidence: None,
-        };
-        let wrong_run = tea_core::Run {
-            id: RunId::new(),
-            ticket_id: ticket.id.clone(),
-            loom_session_id: Some("wrong".to_string()),
-            status: tea_core::RunStatus::Running,
-            evidence: None,
-        };
-        store
-            .add_run(
-                &ticket.id,
-                ActorRef::loom("test-loom"),
-                addressed_run.clone(),
-            )
-            .await
-            .unwrap();
-        store
-            .add_run(&ticket.id, ActorRef::loom("test-loom"), wrong_run.clone())
-            .await
-            .unwrap();
-
-        let loom_app = AxumRouter::new()
-            .route(
-                &format!("/v1/runs/{}/retry", addressed_run.id),
-                post(retry_handler),
-            )
-            .with_state(wrong_run.clone());
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            axum::serve(listener, loom_app).await.unwrap();
-        });
-
-        let observed_store = store.clone();
-        let state = AppState::new(
-            store,
-            tea_brain::TemplateBrainProvider,
-            tea_loom::HttpLoomClient::new(format!("http://{address}"), None),
-            AuthConfig::new("dev-token".to_string()),
-        );
-        let mut app = router(state);
-
-        let response = app
-            .call(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/v1/runs/{}/retry", addressed_run.id))
-                    .header("authorization", "Bearer dev-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::CONFLICT);
-        assert_eq!(
-            observed_store.get_run(&wrong_run.id).await.unwrap().status,
-            tea_core::RunStatus::Running
-        );
-    }
-
-    #[tokio::test]
-    async fn closed_ticket_rejects_mutation_with_conflict() {
-        let mut app = test_router();
-        let response = app
-            .call(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/tickets")
-                    .header("authorization", "Bearer dev-token")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({"title":"Closed","description":"Finish and freeze this work order"})
-                            .to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let ticket: tea_core::Ticket = serde_json::from_slice(&bytes).unwrap();
-
-        app.call(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/v1/tickets/{}/approve", ticket.id))
-                .header("authorization", "Bearer dev-token")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-        app.call(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/v1/tickets/{}/run", ticket.id))
-                .header("authorization", "Bearer dev-token")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-        app.call(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/v1/tickets/{}/close", ticket.id))
-                .header("authorization", "Bearer dev-token")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-        let response = app
-            .call(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/v1/tickets/{}/comments", ticket.id))
-                    .header("authorization", "Bearer dev-token")
-                    .header("content-type", "application/json")
-                    .body(Body::from(json!({"body":"late mutation"}).to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::CONFLICT);
-    }
-
-    #[tokio::test]
-    async fn cancel_ticket_endpoint_sets_cancelled_and_blocks_mutations() {
-        let mut app = test_router();
-        let response = app
-            .call(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/tickets")
-                    .header("authorization", "Bearer dev-token")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({"title":"Cancel","description":"Cancel this work order"})
-                            .to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let ticket: tea_core::Ticket = serde_json::from_slice(&bytes).unwrap();
-
-        let response = app
-            .call(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/v1/tickets/{}/cancel", ticket.id))
-                    .header("authorization", "Bearer dev-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let cancelled: tea_core::Ticket = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(cancelled.status, TicketStatus::Cancelled);
-
-        let response = app
-            .call(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/v1/tickets/{}/comments", ticket.id))
-                    .header("authorization", "Bearer dev-token")
-                    .header("content-type", "application/json")
-                    .body(Body::from(json!({"body":"late mutation"}).to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::CONFLICT);
-
-        let events_response = app
-            .call(
-                Request::builder()
-                    .uri(format!("/v1/tickets/{}/events", ticket.id))
-                    .header("authorization", "Bearer dev-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(events_response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(events_response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let events: Vec<tea_core::TicketEvent> = serde_json::from_slice(&bytes).unwrap();
-        assert!(events
-            .iter()
-            .any(|event| event.kind == tea_core::TicketEventKind::TicketCancelled));
-    }
-
-    #[tokio::test]
-    async fn closed_ticket_analyze_rejects_before_remote_ai_call() {
-        let store = InMemoryTicketStore::default();
-        let ticket = create_closed_ticket_in_store(&store, false).await;
-        let state = AppState::new(
-            store,
-            tea_brain::LoomCapabilityBrainProvider::new(
-                "http://127.0.0.1:9".to_string(),
-                Some("brain-token".to_string()),
-            ),
-            tea_loom::MockLoomClient,
-            AuthConfig::new("dev-token".to_string()),
-        );
-        let mut app = router(state);
-
-        let response = app
-            .call(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/v1/tickets/{}/analyze", ticket.id))
-                    .header("authorization", "Bearer dev-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::CONFLICT);
-    }
-
-    #[tokio::test]
-    async fn closed_ticket_run_rejects_before_remote_loom_call() {
-        let store = InMemoryTicketStore::default();
-        let ticket = create_closed_ticket_in_store(&store, true).await;
-        let state = AppState::new(
-            store,
-            tea_brain::TemplateBrainProvider,
-            tea_loom::HttpLoomClient::new(
-                "http://127.0.0.1:9".to_string(),
-                Some("loom-token".to_string()),
-            ),
-            AuthConfig::new("dev-token".to_string()),
-        );
-        let mut app = router(state);
-
-        let response = app
-            .call(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/v1/tickets/{}/run", ticket.id))
-                    .header("authorization", "Bearer dev-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::CONFLICT);
-    }
-
-    #[tokio::test]
-    async fn blocked_ticket_run_rejects_before_remote_loom_call() {
-        let store = InMemoryTicketStore::default();
-        let ticket = store
-            .create_ticket(
-                "Blocked".to_string(),
-                "Rejected tickets must not start remote Loom runs.".to_string(),
-                TicketSource::Human,
-                ActorRef::human("vmjcv"),
-            )
-            .await
-            .unwrap();
-        store
-            .set_approval_policy(
-                &ticket.id,
-                ActorRef::human("vmjcv"),
-                ApprovalPolicy::AlwaysAuto,
-            )
-            .await
-            .unwrap();
-        store
-            .reject_approval(
-                &ticket.id,
-                ActorRef::human("vmjcv"),
-                "Rejected by reviewer".to_string(),
-            )
-            .await
-            .unwrap();
-        let state = AppState::new(
-            store,
-            tea_brain::TemplateBrainProvider,
-            tea_loom::HttpLoomClient::new(
-                "http://127.0.0.1:9".to_string(),
-                Some("loom-token".to_string()),
-            ),
-            AuthConfig::new("dev-token".to_string()),
-        );
-        let mut app = router(state);
-
-        let response = app
-            .call(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/v1/tickets/{}/run", ticket.id))
-                    .header("authorization", "Bearer dev-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::CONFLICT);
-    }
-
-    #[tokio::test]
-    async fn export_markdown_returns_run_evidence() {
-        let mut app = test_router();
-        let response = app
-            .call(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/tickets")
-                    .header("authorization", "Bearer dev-token")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({"title":"Smoke","description":"Create a safe plan"}).to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let ticket: tea_core::Ticket = serde_json::from_slice(&bytes).unwrap();
-
-        app.call(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/v1/tickets/{}/approve", ticket.id))
-                .header("authorization", "Bearer dev-token")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-        app.call(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/v1/tickets/{}/run", ticket.id))
-                .header("authorization", "Bearer dev-token")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-        let response = app
-            .call(
-                Request::builder()
-                    .uri(format!("/v1/tickets/{}/export/markdown", ticket.id))
-                    .header("authorization", "Bearer dev-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let body = String::from_utf8(bytes.to_vec()).unwrap();
-        assert!(body.contains("mock loom run completed"));
-    }
-
-    #[tokio::test]
-    async fn comments_endpoint_and_exports_return_review_comment_bodies() {
-        let mut app = test_router();
-        let response = app
-            .call(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/tickets")
-                    .header("authorization", "Bearer dev-token")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({"title":"Commented","description":"Ticket with review comments"})
-                            .to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let ticket: Ticket = serde_json::from_slice(&bytes).unwrap();
-
-        let response = app
-            .call(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/v1/tickets/{}/comments", ticket.id))
-                    .header("authorization", "Bearer dev-token")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({"body":"Manual review comment must be exportable"}).to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let comments_response = app
-            .call(
-                Request::builder()
-                    .uri(format!("/v1/tickets/{}/comments", ticket.id))
-                    .header("authorization", "Bearer dev-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(comments_response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(comments_response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let comments: Vec<tea_core::TicketComment> = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(comments.len(), 1);
-        assert_eq!(comments[0].body, "Manual review comment must be exportable");
-
-        let export_response = app
-            .call(
-                Request::builder()
-                    .uri(format!("/v1/tickets/{}/export/json", ticket.id))
-                    .header("authorization", "Bearer dev-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(export_response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(export_response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let exported: Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(
-            exported["comments"][0]["body"],
-            "Manual review comment must be exportable"
-        );
-
-        let markdown_response = app
-            .call(
-                Request::builder()
-                    .uri(format!("/v1/tickets/{}/export/markdown", ticket.id))
-                    .header("authorization", "Bearer dev-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(markdown_response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(markdown_response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let markdown = String::from_utf8(bytes.to_vec()).unwrap();
-        assert!(markdown.contains("## Comments"));
-        assert!(markdown.contains("Manual review comment must be exportable"));
-    }
-
-    #[tokio::test]
-    async fn remote_ai_failure_returns_bad_gateway() {
-        let state = AppState::new(
-            InMemoryTicketStore::default(),
-            tea_brain::LoomCapabilityBrainProvider::new(
-                "http://127.0.0.1:9".to_string(),
-                Some("brain-token".to_string()),
-            ),
-            tea_loom::MockLoomClient,
-            AuthConfig::new("dev-token".to_string()),
-        );
-        let mut app = router(state);
-        let response = app
-            .call(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/tickets")
-                    .header("authorization", "Bearer dev-token")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({"title":"Remote AI","description":"Analyze through remote brain"})
-                            .to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let ticket: tea_core::Ticket = serde_json::from_slice(&bytes).unwrap();
-
-        let response = app
-            .call(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/v1/tickets/{}/analyze", ticket.id))
-                    .header("authorization", "Bearer dev-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
-    }
-
-    #[tokio::test]
-    async fn remote_loom_failure_returns_bad_gateway() {
-        let state = AppState::new(
-            InMemoryTicketStore::default(),
-            tea_brain::TemplateBrainProvider,
-            tea_loom::HttpLoomClient::new(
-                "http://127.0.0.1:9".to_string(),
-                Some("loom-token".to_string()),
-            ),
-            AuthConfig::new("dev-token".to_string()),
-        );
-        let mut app = router(state);
-        let response = app
-            .call(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/tickets")
-                    .header("authorization", "Bearer dev-token")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({"title":"Remote Loom","description":"Execute through remote loom"})
-                            .to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let ticket: tea_core::Ticket = serde_json::from_slice(&bytes).unwrap();
-
-        app.call(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/v1/tickets/{}/approve", ticket.id))
-                .header("authorization", "Bearer dev-token")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-        let response = app
-            .call(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/v1/tickets/{}/run", ticket.id))
-                    .header("authorization", "Bearer dev-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
-    }
-
-    async fn create_closed_ticket_in_store(
-        store: &InMemoryTicketStore,
-        approved: bool,
-    ) -> tea_core::Ticket {
-        let ticket = store
-            .create_ticket(
-                "Closed".to_string(),
-                "Closed before remote side effects.".to_string(),
-                TicketSource::Human,
-                ActorRef::human("vmjcv"),
-            )
-            .await
-            .unwrap();
-        if approved {
-            store
-                .grant_approval(&ticket.id, ActorRef::human("vmjcv"))
-                .await
-                .unwrap();
-        }
-        store
-            .add_run(
-                &ticket.id,
-                ActorRef::loom("test-loom"),
-                tea_core::Run {
-                    id: RunId::new(),
-                    ticket_id: ticket.id.clone(),
-                    loom_session_id: Some("test".to_string()),
-                    status: tea_core::RunStatus::Succeeded,
-                    evidence: Some(tea_core::RunEvidence {
-                        summary: "done".to_string(),
-                        commands: vec![],
-                        artifacts: vec![],
-                        risks: vec![],
-                    }),
-                },
-            )
-            .await
-            .unwrap();
-        store
-            .close_ticket(&ticket.id, ActorRef::human("vmjcv"))
-            .await
-            .unwrap()
-    }
-
-    async fn create_approved_ticket_and_run(app: &mut Router) -> tea_core::Run {
-        let response = app
-            .call(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/tickets")
-                    .header("authorization", "Bearer dev-token")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({"title":"Run action","description":"Exercise run-level action endpoint"})
-                            .to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let ticket: tea_core::Ticket = serde_json::from_slice(&bytes).unwrap();
-
-        let approve_response = app
-            .call(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/v1/tickets/{}/approve", ticket.id))
-                    .header("authorization", "Bearer dev-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(approve_response.status(), StatusCode::OK);
-
-        let run_response = app
-            .call(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/v1/tickets/{}/run", ticket.id))
-                    .header("authorization", "Bearer dev-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(run_response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(run_response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        serde_json::from_slice(&bytes).unwrap()
-    }
-
-    async fn body_text(response: Response) -> String {
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        String::from_utf8(bytes.to_vec()).unwrap()
-    }
-
-    async fn body_bytes(response: Response) -> axum::body::Bytes {
-        axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap()
-    }
-
-    fn temp_store_path(prefix: &str) -> std::path::PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("current time should be after unix epoch")
-            .as_nanos();
-        std::env::temp_dir().join(format!("{prefix}-{}-{nanos}.sqlite", std::process::id()))
-    }
-}
+mod tests;

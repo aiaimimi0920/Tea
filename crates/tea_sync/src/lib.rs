@@ -19,8 +19,11 @@
 
 #![forbid(unsafe_code)]
 
+use std::collections::{BTreeSet, HashMap};
+
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 /// Errors from parsing or mapping external issues.
@@ -37,6 +40,12 @@ pub enum SyncError {
     },
     #[error("unsupported provider: {0}")]
     UnsupportedProvider(String),
+    #[error("multiple Tea tickets mirror {provider} issue #{external_id}: {ticket_ids:?}")]
+    DuplicateMirror {
+        provider: String,
+        external_id: String,
+        ticket_ids: Vec<String>,
+    },
 }
 
 /// Supported external issue-tracker providers.
@@ -91,6 +100,18 @@ pub fn provider_label(provider: Provider) -> String {
 /// mirrors. Sync passes match on this to update rather than duplicate.
 pub fn sync_id_label(provider: Provider, external_id: &str) -> String {
     format!("sync-id:{}:{}", provider.slug(), external_id.trim())
+}
+
+/// Stable, header-safe key for creating the Tea mirror of one external issue.
+/// The raw external id is hashed because providers may expose Unicode or
+/// whitespace that is not valid in Tea's `Idempotency-Key` contract.
+pub fn create_idempotency_key(issue: &ExternalIssue) -> String {
+    let provider = issue.provider.slug();
+    let mut hasher = Sha256::new();
+    hasher.update(provider.as_bytes());
+    hasher.update([0]);
+    hasher.update(issue.external_id.trim().as_bytes());
+    format!("tea-sync-v1-{provider}-{:x}", hasher.finalize())
 }
 
 /// Extract the external id from a `sync-id:<provider>:<id>` label, if present and
@@ -292,23 +313,66 @@ pub enum SyncAction {
     Update { ticket_id: String, body: Value },
 }
 
+/// Index of existing Tea mirrors keyed by external id: `external_id ->` the
+/// sorted, deduplicated set of ticket ids carrying that `sync-id` label.
+pub type MirrorIndex = HashMap<String, BTreeSet<String>>;
+
+/// Build the mirror index for one provider in a single pass over the existing
+/// Tea tickets. Sync passes plan every issue against this index instead of
+/// rescanning every ticket's labels per issue.
+pub fn build_mirror_index(
+    provider: Provider,
+    existing_tickets: &[(String, Vec<String>)],
+) -> MirrorIndex {
+    let prefix = format!("sync-id:{}:", provider.slug());
+    let mut index = MirrorIndex::new();
+    for (ticket_id, labels) in existing_tickets {
+        for label in labels {
+            if let Some(external_id) = label.strip_prefix(&prefix) {
+                index
+                    .entry(external_id.to_string())
+                    .or_default()
+                    .insert(ticket_id.clone());
+            }
+        }
+    }
+    index
+}
+
 /// Decide the sync action for an external issue given the set of existing Tea
 /// tickets (as `(ticket_id, labels)` pairs). Matches on the `sync-id` provenance
 /// label so re-syncing updates rather than duplicates.
 pub fn plan_action(
     issue: &ExternalIssue,
     existing_tickets: &[(String, Vec<String>)],
-) -> SyncAction {
-    let want = sync_id_label(issue.provider, &issue.external_id);
-    for (ticket_id, labels) in existing_tickets {
-        if labels.iter().any(|l| l == &want) {
-            return SyncAction::Update {
-                ticket_id: ticket_id.clone(),
-                body: to_edit_request(issue),
-            };
-        }
+) -> Result<SyncAction, SyncError> {
+    let index = build_mirror_index(issue.provider, existing_tickets);
+    plan_action_indexed(issue, &index)
+}
+
+/// [`plan_action`] against a prebuilt [`MirrorIndex`] (which must have been
+/// built for the same provider as the issue).
+pub fn plan_action_indexed(
+    issue: &ExternalIssue,
+    index: &MirrorIndex,
+) -> Result<SyncAction, SyncError> {
+    let ticket_ids = index
+        .get(issue.external_id.trim())
+        .map(|ticket_ids| ticket_ids.iter().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+
+    match ticket_ids.as_slice() {
+        [] => Ok(SyncAction::Create(to_create_request(issue))),
+        [ticket_id] => Ok(SyncAction::Update {
+            ticket_id: ticket_id.clone(),
+            body: to_edit_request(issue),
+        }),
+        _ => Err(SyncError::DuplicateMirror {
+            provider: issue.provider.slug().to_string(),
+            external_id: issue.external_id.clone(),
+            ticket_ids,
+        }),
     }
-    SyncAction::Create(to_create_request(issue))
 }
 
 /// When an external issue is closed, the mirroring Tea ticket should move toward
@@ -440,6 +504,25 @@ mod tests {
     }
 
     #[test]
+    fn create_idempotency_keys_are_stable_distinct_and_header_safe() {
+        let mut issue = parse_issue(Provider::GitHub, &github_issue()).unwrap();
+        issue.external_id = " 工单:四十二 ".to_string();
+        let first = create_idempotency_key(&issue);
+        let replay = create_idempotency_key(&issue);
+        assert_eq!(first, replay);
+        assert!(first.starts_with("tea-sync-v1-github-"));
+        assert!(first.len() <= 255);
+        assert!(first.bytes().all(|byte| (0x21..=0x7e).contains(&byte)));
+
+        let mut changed_id = issue.clone();
+        changed_id.external_id = "工单:四十三".to_string();
+        assert_ne!(first, create_idempotency_key(&changed_id));
+        let mut changed_provider = issue;
+        changed_provider.provider = Provider::Gitea;
+        assert_ne!(first, create_idempotency_key(&changed_provider));
+    }
+
+    #[test]
     fn operator_labels_include_provenance_and_namespaced_external_labels() {
         let issue = parse_issue(Provider::GitHub, &github_issue()).unwrap();
         let labels = operator_labels_for(&issue);
@@ -487,7 +570,7 @@ mod tests {
     #[test]
     fn plan_action_creates_when_no_mirror_exists() {
         let issue = parse_issue(Provider::GitHub, &github_issue()).unwrap();
-        let action = plan_action(&issue, &[]);
+        let action = plan_action(&issue, &[]).unwrap();
         match action {
             SyncAction::Create(body) => assert_eq!(body["title"], "Fix the login redirect loop"),
             other => panic!("expected Create, got {other:?}"),
@@ -504,13 +587,107 @@ mod tests {
                 vec!["sync:github".to_string(), "sync-id:github:42".to_string()],
             ),
         ];
-        match plan_action(&issue, &existing) {
+        match plan_action(&issue, &existing).unwrap() {
             SyncAction::Update { ticket_id, body } => {
                 assert_eq!(ticket_id, "ticket-1");
                 assert_eq!(body["title"], "Fix the login redirect loop");
             }
             other => panic!("expected Update, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn mirror_index_groups_tickets_by_external_id_in_one_pass() {
+        let existing = vec![
+            ("unrelated".to_string(), vec!["source:human".to_string()]),
+            (
+                "ticket-1".to_string(),
+                vec!["sync:github".to_string(), "sync-id:github:42".to_string()],
+            ),
+            ("ticket-2".to_string(), vec!["sync-id:github:7".to_string()]),
+            (
+                "ticket-3".to_string(),
+                vec!["sync-id:github:42".to_string()],
+            ),
+        ];
+
+        let index = build_mirror_index(Provider::GitHub, &existing);
+
+        assert_eq!(index.len(), 2);
+        assert_eq!(
+            index["42"].iter().cloned().collect::<Vec<_>>(),
+            vec!["ticket-1".to_string(), "ticket-3".to_string()]
+        );
+        assert_eq!(
+            index["7"].iter().cloned().collect::<Vec<_>>(),
+            vec!["ticket-2".to_string()]
+        );
+    }
+
+    #[test]
+    fn mirror_index_ignores_other_providers_and_dedups_ticket_ids() {
+        let existing = vec![
+            (
+                "gitea-only".to_string(),
+                vec!["sync-id:gitea:42".to_string()],
+            ),
+            (
+                "ticket-b".to_string(),
+                vec!["sync-id:github:42".to_string()],
+            ),
+            (
+                "ticket-b".to_string(),
+                vec!["sync-id:github:42".to_string()],
+            ),
+        ];
+
+        let index = build_mirror_index(Provider::GitHub, &existing);
+
+        assert_eq!(index.len(), 1);
+        assert_eq!(
+            index["42"].iter().cloned().collect::<Vec<_>>(),
+            vec!["ticket-b".to_string()]
+        );
+        assert!(build_mirror_index(Provider::Gitea, &existing).contains_key("42"));
+    }
+
+    #[test]
+    fn plan_action_indexed_matches_unindexed_planning() {
+        let issue = parse_issue(Provider::GitHub, &github_issue()).unwrap();
+        let existing = vec![(
+            "ticket-1".to_string(),
+            vec!["sync-id:github:42".to_string()],
+        )];
+        let index = build_mirror_index(Provider::GitHub, &existing);
+
+        assert_eq!(
+            plan_action_indexed(&issue, &index),
+            plan_action(&issue, &existing)
+        );
+        assert_eq!(
+            plan_action_indexed(&issue, &MirrorIndex::new()),
+            plan_action(&issue, &[])
+        );
+    }
+
+    #[test]
+    fn plan_action_rejects_ambiguous_mirrors() {
+        let issue = parse_issue(Provider::GitHub, &github_issue()).unwrap();
+        let matching_labels = vec!["sync-id:github:42".to_string()];
+        let existing = vec![
+            ("ticket-b".to_string(), matching_labels.clone()),
+            ("ticket-a".to_string(), matching_labels.clone()),
+            ("ticket-a".to_string(), matching_labels),
+        ];
+
+        assert_eq!(
+            plan_action(&issue, &existing),
+            Err(SyncError::DuplicateMirror {
+                provider: "github".to_string(),
+                external_id: "42".to_string(),
+                ticket_ids: vec!["ticket-a".to_string(), "ticket-b".to_string()],
+            })
+        );
     }
 
     #[test]

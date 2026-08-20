@@ -35,6 +35,12 @@ const zh: Record<string, string> = {
   "Connecting to Tea daemon...": "正在连接 Tea 守护进程……",
   "Tea daemon connected": "Tea 守护进程已连接",
   "Tea daemon is not fully ready": "Tea 守护进程尚未就绪",
+  "Switch language": "切换语言",
+  "Execution provider": "执行提供方",
+  "Loom execution": "Loom 真实执行",
+  "Simulation mode": "模拟执行模式",
+  "Execution provider unknown": "执行提供方未知",
+  "Data temporarily unavailable": "部分数据暂时不可用",
 
   // Queue / list controls
   "Current queue": "当前队列",
@@ -175,6 +181,7 @@ const zh: Record<string, string> = {
   "Execution progress": "执行进度",
   "Export": "导出",
   "Export preview": "导出预览",
+  "Preview truncated. Download the full export.": "预览已截断。请下载完整导出文件。",
   "Export this work order": "导出该工单",
   "Preview JSON": "预览 JSON",
   "Preview JSON export": "预览 JSON 导出",
@@ -200,7 +207,7 @@ const zh: Record<string, string> = {
   // Local notes
   "Local notes": "本地备注",
   "Local notes editor": "本地备注编辑器",
-  "Local notes in header": "标题栏中的本地备注",
+  "Local only": "仅本地",
   "Add note": "添加备注",
   "Hide local notes": "隐藏本地备注",
   "Add a local note": "添加一条本地备注",
@@ -232,6 +239,9 @@ const zh: Record<string, string> = {
   "Tea owns these settings until Loom claims Tea configuration.":
     "在 Loom 接管 Tea 配置之前，这些设置由 Tea 自行管理。",
   "Loom manages Tea configuration.": "Loom 正在管理 Tea 配置。",
+  "Tea-local settings are read-only while Loom owns Tea configuration. Change these settings from Loom instead.":
+    "Loom 管理 Tea 配置期间，Tea 本地设置为只读；请改在 Loom 中调整这些设置。",
+  "Fallback": "回退原因",
   "Enable notifications": "启用通知",
   "Human ticket default approval policy": "人工工单默认审批策略",
   "Hook ticket default approval policy": "Hook 工单默认审批策略",
@@ -296,7 +306,6 @@ const zh: Record<string, string> = {
   "Current queue summary": "当前队列概览",
   "Issue metadata summary": "工单元数据概览",
   "Issue routing context": "工单路由上下文",
-  "Issue labels in header": "标题栏中的工单标签",
   "Timeline activity summary": "时间线活动概览",
   "Timeline filters": "时间线筛选",
   "Conversation timeline ": "对话时间线",
@@ -410,6 +419,9 @@ const zh: Record<string, string> = {
   "Consecutive low-level daemon events folded to keep the work-order discussion readable.":
     "连续的底层守护进程事件已折叠，以保持工单讨论的可读性。",
   "Run actions are disabled for terminal work orders.": "终态工单已禁用执行操作。",
+  "Stop is available only for queued, running, or retrying runs.":
+    "仅排队中、运行中或重试中的执行可以停止。",
+  "Retry is available only for failed or stopped runs.": "仅失败或已停止的执行可以重试。",
 
   // List row + detail routing context
   "Tea local operator": "Tea 本地操作员",

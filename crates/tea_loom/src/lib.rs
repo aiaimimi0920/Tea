@@ -1,20 +1,59 @@
 #![forbid(unsafe_code)]
 
 use async_trait::async_trait;
+use serde::de::DeserializeOwned;
 use tea_config::{LoomManagedDocumentMetadata, LoomManagedTeaConfiguration, TeaConfiguration};
 use tea_core::{Run, RunEvidence, RunId, RunStatus, Ticket};
+use tea_http_read::{error_body_preview, read_response_bytes_limited, ReadBytesLimitedError};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum LoomError {
     #[error("Loom request failed: {0}")]
     Request(#[from] reqwest::Error),
+    #[error("Loom returned invalid response: {0}")]
+    InvalidResponse(String),
 }
 
 pub type LoomResult<T> = Result<T, LoomError>;
 
+const MAX_LOOM_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+
+async fn read_json_response_limited<T: DeserializeOwned>(
+    response: reqwest::Response,
+    max_bytes: usize,
+    context: &str,
+) -> LoomResult<T> {
+    let (status, body) = read_response_bytes_limited(response, max_bytes)
+        .await
+        .map_err(|error| match error {
+            ReadBytesLimitedError::BodyTooLarge { max_bytes } => LoomError::InvalidResponse(
+                format!("{context} body exceeded the {max_bytes}-byte limit"),
+            ),
+            ReadBytesLimitedError::LengthOverflow => {
+                LoomError::InvalidResponse(format!("{context} body length overflowed"))
+            }
+            ReadBytesLimitedError::Read(source) => LoomError::Request(source),
+        })?;
+
+    if !status.is_success() {
+        let preview = error_body_preview(&String::from_utf8_lossy(&body));
+        return Err(LoomError::InvalidResponse(format!(
+            "{context} returned HTTP {status}: {preview}"
+        )));
+    }
+
+    serde_json::from_slice(&body).map_err(|error| {
+        LoomError::InvalidResponse(format!("{context} body was not valid JSON: {error}"))
+    })
+}
+
 #[async_trait]
 pub trait LoomClient: Clone + Send + Sync + 'static {
+    fn execution_provider(&self) -> &'static str {
+        "custom"
+    }
+
     async fn start_run(&self, ticket: &Ticket) -> LoomResult<Run>;
     async fn stop_run(&self, run: &Run) -> LoomResult<Run>;
     async fn retry_run(&self, run: &Run) -> LoomResult<Run>;
@@ -31,6 +70,10 @@ pub struct MockLoomClient;
 
 #[async_trait]
 impl LoomClient for MockLoomClient {
+    fn execution_provider(&self) -> &'static str {
+        "mock"
+    }
+
     async fn start_run(&self, ticket: &Ticket) -> LoomResult<Run> {
         Ok(Run {
             id: RunId::new(),
@@ -84,14 +127,48 @@ pub struct HttpLoomClient {
     base_url: String,
     auth_token: Option<String>,
     http: reqwest::Client,
+    /// Per-request timeout applied via [`reqwest::RequestBuilder::timeout`]
+    /// when the client is shared and carries no client-level total timeout.
+    request_timeout: Option<std::time::Duration>,
 }
 
 impl HttpLoomClient {
     pub fn new(base_url: String, auth_token: Option<String>) -> Self {
+        Self::new_with_timeout(base_url, auth_token, std::time::Duration::from_secs(300))
+    }
+
+    pub fn new_with_timeout(
+        base_url: String,
+        auth_token: Option<String>,
+        request_timeout: std::time::Duration,
+    ) -> Self {
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             auth_token,
-            http: reqwest::Client::new(),
+            http: reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(5))
+                .timeout(request_timeout)
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .expect("build Loom HTTP client"),
+            request_timeout: None,
+        }
+    }
+
+    /// Reuse an existing [`reqwest::Client`] (e.g. one shared connection pool
+    /// per process) and enforce `request_timeout` per request instead of
+    /// through the client.
+    pub fn new_with_client(
+        base_url: String,
+        auth_token: Option<String>,
+        http: reqwest::Client,
+        request_timeout: std::time::Duration,
+    ) -> Self {
+        Self {
+            base_url: base_url.trim_end_matches('/').to_string(),
+            auth_token,
+            http,
+            request_timeout: Some(request_timeout),
         }
     }
 
@@ -100,6 +177,10 @@ impl HttpLoomClient {
     }
 
     fn authorize(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        let request = match self.request_timeout {
+            Some(timeout) => request.timeout(timeout),
+            None => request,
+        };
         match &self.auth_token {
             Some(token) if !token.trim().is_empty() => request.bearer_auth(token),
             _ => request,
@@ -125,6 +206,10 @@ struct PutTeaConfigurationRequest<'a> {
 
 #[async_trait]
 impl LoomClient for HttpLoomClient {
+    fn execution_provider(&self) -> &'static str {
+        "loom"
+    }
+
     async fn start_run(&self, ticket: &Ticket) -> LoomResult<Run> {
         let response = self
             .authorize(
@@ -133,11 +218,8 @@ impl LoomClient for HttpLoomClient {
                     .json(&StartRunRequest { ticket }),
             )
             .send()
-            .await?
-            .error_for_status()?
-            .json::<Run>()
             .await?;
-        Ok(response)
+        read_json_response_limited(response, MAX_LOOM_RESPONSE_BYTES, "start run").await
     }
 
     async fn stop_run(&self, run: &Run) -> LoomResult<Run> {
@@ -148,11 +230,8 @@ impl LoomClient for HttpLoomClient {
                     .json(&RunActionRequest { run }),
             )
             .send()
-            .await?
-            .error_for_status()?
-            .json::<Run>()
             .await?;
-        Ok(response)
+        read_json_response_limited(response, MAX_LOOM_RESPONSE_BYTES, "stop run").await
     }
 
     async fn retry_run(&self, run: &Run) -> LoomResult<Run> {
@@ -163,22 +242,17 @@ impl LoomClient for HttpLoomClient {
                     .json(&RunActionRequest { run }),
             )
             .send()
-            .await?
-            .error_for_status()?
-            .json::<Run>()
             .await?;
-        Ok(response)
+        read_json_response_limited(response, MAX_LOOM_RESPONSE_BYTES, "retry run").await
     }
 
     async fn read_tea_configuration(&self) -> LoomResult<LoomManagedTeaConfiguration> {
         let response = self
             .authorize(self.http.get(self.url("/v1/configuration/apps/tea")))
             .send()
-            .await?
-            .error_for_status()?
-            .json::<LoomManagedTeaConfiguration>()
             .await?;
-        Ok(response)
+        read_json_response_limited(response, MAX_LOOM_RESPONSE_BYTES, "read Tea configuration")
+            .await
     }
 
     async fn write_tea_configuration(
@@ -194,11 +268,9 @@ impl LoomClient for HttpLoomClient {
                 },
             ))
             .send()
-            .await?
-            .error_for_status()?
-            .json::<LoomManagedTeaConfiguration>()
             .await?;
-        Ok(response)
+        read_json_response_limited(response, MAX_LOOM_RESPONSE_BYTES, "write Tea configuration")
+            .await
     }
 }
 
@@ -216,10 +288,33 @@ impl RuntimeLoomClient {
     pub fn http(base_url: String, auth_token: Option<String>) -> Self {
         Self::Http(HttpLoomClient::new(base_url, auth_token))
     }
+
+    /// HTTP client variant backed by a shared [`reqwest::Client`] with a
+    /// per-request timeout; see [`HttpLoomClient::new_with_client`].
+    pub fn http_with_client(
+        base_url: String,
+        auth_token: Option<String>,
+        http: reqwest::Client,
+        request_timeout: std::time::Duration,
+    ) -> Self {
+        Self::Http(HttpLoomClient::new_with_client(
+            base_url,
+            auth_token,
+            http,
+            request_timeout,
+        ))
+    }
 }
 
 #[async_trait]
 impl LoomClient for RuntimeLoomClient {
+    fn execution_provider(&self) -> &'static str {
+        match self {
+            Self::Mock(client) => client.execution_provider(),
+            Self::Http(client) => client.execution_provider(),
+        }
+    }
+
     async fn start_run(&self, ticket: &Ticket) -> LoomResult<Run> {
         match self {
             Self::Mock(client) => client.start_run(ticket).await,
@@ -294,6 +389,15 @@ mod tests {
     use super::*;
     use tea_core::{ActorRef, TicketId, TicketSource};
     use tokio::net::TcpListener;
+
+    #[test]
+    fn runtime_client_reports_the_active_execution_provider() {
+        assert_eq!(RuntimeLoomClient::mock().execution_provider(), "mock");
+        assert_eq!(
+            RuntimeLoomClient::http("http://127.0.0.1:8765".to_string(), None).execution_provider(),
+            "loom"
+        );
+    }
 
     #[tokio::test]
     async fn mock_run_succeeds_with_evidence() {
@@ -499,6 +603,178 @@ mod tests {
 
         assert_eq!(config.document.revision, 7);
         assert!(!config.config.notifications_enabled);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn loom_response_reader_rejects_oversized_json() {
+        use axum::{body::Body, routing::get, Router};
+
+        async fn handler() -> Body {
+            Body::from("123456789")
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, Router::new().route("/", get(handler)))
+                .await
+                .unwrap();
+        });
+        let response = reqwest::Client::new()
+            .get(format!("http://{address}"))
+            .send()
+            .await
+            .unwrap();
+
+        let error = read_json_response_limited::<serde_json::Value>(response, 8, "test")
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(error, LoomError::InvalidResponse(message) if message.contains("8-byte limit"))
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn loom_response_reader_sanitizes_upstream_error_preview() {
+        use axum::{http::StatusCode, routing::get, Router};
+
+        async fn handler() -> (StatusCode, String) {
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("first\r\nsecond\t\u{1b}\u{2028}{}", "x".repeat(600)),
+            )
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, Router::new().route("/", get(handler)))
+                .await
+                .unwrap();
+        });
+        let response = reqwest::Client::new()
+            .get(format!("http://{address}"))
+            .send()
+            .await
+            .unwrap();
+
+        let error = read_json_response_limited::<serde_json::Value>(response, 8 * 1024, "test")
+            .await
+            .unwrap_err();
+        let LoomError::InvalidResponse(message) = error else {
+            panic!("expected an invalid-response error");
+        };
+
+        assert!(message.contains("HTTP 502 Bad Gateway: first  second  "));
+        assert!(message.ends_with("..."));
+        assert!(!message.chars().any(char::is_control), "{message:?}");
+        assert!(!message.contains('\u{2028}'), "{message:?}");
+        assert!(!message.contains('\u{2029}'), "{message:?}");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn http_loom_client_does_not_follow_redirects() {
+        use axum::{response::Redirect, routing::post, Router};
+
+        async fn handler() -> Redirect {
+            Redirect::temporary("http://127.0.0.1:1/redirected")
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, Router::new().route("/v1/runs", post(handler)))
+                .await
+                .unwrap();
+        });
+        let ticket = Ticket::new(
+            TicketId::new(),
+            "Redirect".to_string(),
+            "Reject an authenticated cross-origin redirect.".to_string(),
+            TicketSource::Human,
+            ActorRef::human("vmjcv"),
+        );
+        let client =
+            HttpLoomClient::new(format!("http://{address}"), Some("loom-token".to_string()));
+
+        let error = client.start_run(&ticket).await.unwrap_err();
+
+        assert!(
+            matches!(error, LoomError::InvalidResponse(message) if message.contains("HTTP 307"))
+        );
+        server.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn http_loom_client_honors_custom_request_timeout() {
+        use axum::{routing::get, Json, Router};
+        use serde_json::json;
+
+        async fn slow_handler() -> Json<serde_json::Value> {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            Json(json!({}))
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new().route("/v1/configuration/apps/tea", get(slow_handler)),
+            )
+            .await
+            .unwrap();
+        });
+        let client = HttpLoomClient::new_with_timeout(
+            format!("http://{address}"),
+            None,
+            std::time::Duration::from_millis(25),
+        );
+
+        let error = client.read_tea_configuration().await.unwrap_err();
+        assert!(matches!(error, LoomError::Request(inner) if inner.is_timeout()));
+        server.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn http_loom_client_with_shared_client_applies_per_request_timeout() {
+        use axum::{routing::get, Json, Router};
+        use serde_json::json;
+
+        async fn slow_handler() -> Json<serde_json::Value> {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            Json(json!({}))
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new().route("/v1/configuration/apps/tea", get(slow_handler)),
+            )
+            .await
+            .unwrap();
+        });
+        // Shared client without any client-level total timeout.
+        let shared = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+        let client = HttpLoomClient::new_with_client(
+            format!("http://{address}"),
+            None,
+            shared,
+            std::time::Duration::from_millis(25),
+        );
+
+        let error = client.read_tea_configuration().await.unwrap_err();
+        assert!(matches!(error, LoomError::Request(inner) if inner.is_timeout()));
         server.abort();
     }
 }

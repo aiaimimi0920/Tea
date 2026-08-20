@@ -10,4 +10,5 @@ description = "Tea external issue-tracker sync mapping (GitHub issues <-> Tea ti
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 thiserror.workspace = true

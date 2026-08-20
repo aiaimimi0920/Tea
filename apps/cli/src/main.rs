@@ -1,9 +1,15 @@
 #![forbid(unsafe_code)]
 
-use std::path::PathBuf;
+use std::io::Read as _;
+use std::path::{Path, PathBuf};
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde_json::{json, Value};
+#[cfg(test)]
+use tea_http_read::MAX_ERROR_PREVIEW_CHARS;
+use tea_http_read::{error_body_preview, percent_encode_component, read_response_text_limited};
+
+const MAX_HOOK_INTAKE_FILE_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Debug, Parser)]
 #[command(name = "tea-cli", about = "Tea AI work-order CLI")]
@@ -60,7 +66,7 @@ enum TicketCommand {
     /// Edit mutable fields on an existing work order. System-derived labels
     /// (source:, policy:, context:) are always preserved.
     Edit(EditTicketArgs),
-    List,
+    List(ListTicketArgs),
     Show {
         ticket_id: String,
     },
@@ -141,10 +147,13 @@ struct CreateTicketArgs {
     /// Optional approval policy override applied at creation.
     #[arg(long = "approval-policy")]
     approval_policy: Option<String>,
+    /// Stable key to replay the same logical create safely after an uncertain failure.
+    #[arg(long = "idempotency-key")]
+    idempotency_key: Option<String>,
 }
 
 impl CreateTicketArgs {
-    fn into_request_body(self) -> serde_json::Value {
+    fn into_request(self) -> (serde_json::Value, Option<String>) {
         let mut body = json!({ "title": self.title, "description": self.description });
         let map = body
             .as_object_mut()
@@ -172,7 +181,7 @@ impl CreateTicketArgs {
         {
             map.insert("approval_policy".to_string(), json!(policy));
         }
-        body
+        (body, self.idempotency_key)
     }
 }
 
@@ -192,6 +201,52 @@ struct EditTicketArgs {
     /// labels (source:, policy:, context:) are always preserved by the daemon.
     #[arg(long = "label", value_name = "LABEL")]
     labels: Option<Vec<String>>,
+}
+
+#[derive(Debug, Args, Default)]
+struct ListTicketArgs {
+    /// Optional exact ticket status filter.
+    #[arg(long)]
+    status: Option<String>,
+    /// Optional exact ticket source filter.
+    #[arg(long)]
+    source: Option<String>,
+    /// Opt into a paged response with at most this many tickets (1-200).
+    #[arg(long, value_parser = clap::value_parser!(u16).range(1..=200))]
+    limit: Option<u16>,
+    /// Opaque continuation cursor returned by a previous paged response.
+    #[arg(long)]
+    cursor: Option<String>,
+}
+
+impl ListTicketArgs {
+    fn request_path(&self) -> String {
+        let mut query = Vec::new();
+        for (name, value) in [
+            ("status", self.status.as_deref()),
+            ("source", self.source.as_deref()),
+        ] {
+            if let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) {
+                query.push(format!("{name}={}", percent_encode_component(value)));
+            }
+        }
+        if let Some(limit) = self.limit {
+            query.push(format!("limit={limit}"));
+        }
+        if let Some(cursor) = self
+            .cursor
+            .as_deref()
+            .map(str::trim)
+            .filter(|cursor| !cursor.is_empty())
+        {
+            query.push(format!("cursor={}", percent_encode_component(cursor)));
+        }
+        if query.is_empty() {
+            "/v1/tickets".to_string()
+        } else {
+            format!("/v1/tickets?{}", query.join("&"))
+        }
+    }
 }
 
 impl EditTicketArgs {
@@ -247,7 +302,29 @@ enum HookCommand {
     Intake {
         #[arg(long)]
         file: PathBuf,
+        /// Stable key to replay the same Hook intake safely after an uncertain failure.
+        #[arg(long = "idempotency-key")]
+        idempotency_key: Option<String>,
     },
+}
+
+fn parse_hook_intake_payload(reader: impl std::io::Read, source: &str) -> anyhow::Result<Value> {
+    let mut bytes = Vec::new();
+    reader
+        .take((MAX_HOOK_INTAKE_FILE_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_HOOK_INTAKE_FILE_BYTES {
+        anyhow::bail!(
+            "Hook intake file {source} exceeds the {MAX_HOOK_INTAKE_FILE_BYTES}-byte limit"
+        );
+    }
+    serde_json::from_slice(&bytes)
+        .map_err(|error| anyhow::anyhow!("invalid Hook intake JSON in {source}: {error}"))
+}
+
+fn read_hook_intake_payload(path: &Path) -> anyhow::Result<Value> {
+    let file = std::fs::File::open(path)?;
+    parse_hook_intake_payload(file, &path.display().to_string())
 }
 
 #[tokio::main]
@@ -263,23 +340,26 @@ async fn main() -> anyhow::Result<()> {
         Command::Ticket { command } => run_ticket_command(&client, command).await?,
         Command::Run { command } => match command {
             RunCommand::Show { run_id } => {
-                CommandOutput::Json(client.get(&format!("/v1/runs/{run_id}")).await?)
+                CommandOutput::Json(client.get(&run_path(&run_id, "")).await?)
             }
-            RunCommand::Stop { run_id } => CommandOutput::Json(
-                client
-                    .post(&format!("/v1/runs/{run_id}/stop"), json!({}))
-                    .await?,
-            ),
-            RunCommand::Retry { run_id } => CommandOutput::Json(
-                client
-                    .post(&format!("/v1/runs/{run_id}/retry"), json!({}))
-                    .await?,
-            ),
+            RunCommand::Stop { run_id } => {
+                CommandOutput::Json(client.post(&run_path(&run_id, "/stop"), json!({})).await?)
+            }
+            RunCommand::Retry { run_id } => {
+                CommandOutput::Json(client.post(&run_path(&run_id, "/retry"), json!({})).await?)
+            }
         },
         Command::Hook { command } => match command {
-            HookCommand::Intake { file } => {
-                let payload: Value = serde_json::from_str(&std::fs::read_to_string(file)?)?;
-                CommandOutput::Json(client.post("/v1/intake/hook", payload).await?)
+            HookCommand::Intake {
+                file,
+                idempotency_key,
+            } => {
+                let payload = read_hook_intake_payload(&file)?;
+                CommandOutput::Json(
+                    client
+                        .post_idempotent("/v1/intake/hook", payload, idempotency_key.as_deref())
+                        .await?,
+                )
             }
         },
     };
@@ -300,95 +380,59 @@ async fn run_config_command(
             notifications_enabled,
             human_ticket_default_approval_policy,
             hook_ticket_default_approval_policy,
-        } => {
-            let current = client.get("/v1/configuration").await?;
-            let config = current
-                .get("config")
-                .cloned()
-                .unwrap_or_else(default_config_payload);
-            Ok(CommandOutput::Json(
-                client
-                    .put(
-                        "/v1/configuration",
-                        update_config_fields(
-                            config,
-                            notifications_enabled,
-                            human_ticket_default_approval_policy,
-                            hook_ticket_default_approval_policy,
-                        ),
-                    )
-                    .await?,
-            ))
-        }
-        ConfigCommand::SetNotifications { enabled } => {
-            let current = client.get("/v1/configuration").await?;
-            let config = current
-                .get("config")
-                .cloned()
-                .unwrap_or_else(default_config_payload);
-            Ok(CommandOutput::Json(
-                client
-                    .put(
-                        "/v1/configuration",
-                        update_config_notifications(config, enabled),
-                    )
-                    .await?,
-            ))
-        }
+        } => Ok(CommandOutput::Json(
+            client
+                .patch(
+                    "/v1/configuration",
+                    config_patch_payload(
+                        notifications_enabled,
+                        human_ticket_default_approval_policy,
+                        hook_ticket_default_approval_policy,
+                    ),
+                )
+                .await?,
+        )),
+        ConfigCommand::SetNotifications { enabled } => Ok(CommandOutput::Json(
+            client
+                .patch(
+                    "/v1/configuration",
+                    json!({ "notifications_enabled": enabled }),
+                )
+                .await?,
+        )),
     }
 }
 
-fn default_config_payload() -> Value {
-    json!({
-        "notifications_enabled": true,
-        "human_ticket_default_approval_policy": "human_before_execute",
-        "hook_ticket_default_approval_policy": "plan_only"
-    })
-}
-
-fn update_config_notifications(mut config: Value, enabled: bool) -> Value {
-    if !config.is_object() {
-        config = default_config_payload();
-    }
-    if let Some(object) = config.as_object_mut() {
-        object.insert("notifications_enabled".to_string(), Value::Bool(enabled));
-    }
-    config
-}
-
-fn update_config_fields(
-    mut config: Value,
+fn config_patch_payload(
     notifications_enabled: Option<bool>,
     human_ticket_default_approval_policy: Option<String>,
     hook_ticket_default_approval_policy: Option<String>,
 ) -> Value {
-    if !config.is_object() {
-        config = default_config_payload();
+    let mut patch = serde_json::Map::new();
+    if let Some(enabled) = notifications_enabled {
+        patch.insert("notifications_enabled".to_string(), Value::Bool(enabled));
     }
-    if let Some(object) = config.as_object_mut() {
-        if let Some(enabled) = notifications_enabled {
-            object.insert("notifications_enabled".to_string(), Value::Bool(enabled));
-        }
-        if let Some(policy) = human_ticket_default_approval_policy {
-            object.insert(
-                "human_ticket_default_approval_policy".to_string(),
-                Value::String(policy),
-            );
-        }
-        if let Some(policy) = hook_ticket_default_approval_policy {
-            object.insert(
-                "hook_ticket_default_approval_policy".to_string(),
-                Value::String(policy),
-            );
-        }
+    if let Some(policy) = human_ticket_default_approval_policy {
+        patch.insert(
+            "human_ticket_default_approval_policy".to_string(),
+            Value::String(policy),
+        );
     }
-    config
+    if let Some(policy) = hook_ticket_default_approval_policy {
+        patch.insert(
+            "hook_ticket_default_approval_policy".to_string(),
+            Value::String(policy),
+        );
+    }
+    Value::Object(patch)
 }
 
 enum CommandOutput {
     Json(Value),
     Text(String),
 }
+
+const MAX_TEA_API_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 
 fn format_status(status: &Value) -> String {
     let service = scalar_to_string(status.get("service")).unwrap_or_else(|| "tea".to_string());
@@ -398,6 +442,10 @@ fn format_status(status: &Value) -> String {
         format!("Service: {service}"),
         format!("Status: {status_text}"),
     ];
+
+    if let Some(provider) = scalar_to_string(status.get("execution_provider")) {
+        lines.push(format!("Execution provider: {provider}"));
+    }
 
     if let Some(store) = status.get("store") {
         let backend =
@@ -413,6 +461,18 @@ fn format_status(status: &Value) -> String {
                 ));
             }
             _ => lines.push("SQLite schema: n/a".to_string()),
+        }
+
+        if let Some(key_count) = scalar_to_string(store.get("idempotency_key_count")) {
+            lines.push(format!("Idempotency keys: {key_count}"));
+        }
+        if let (Some(page_count), Some(freelist_count)) = (
+            scalar_to_string(store.get("sqlite_page_count")),
+            scalar_to_string(store.get("sqlite_freelist_count")),
+        ) {
+            lines.push(format!(
+                "SQLite pages: {page_count} (free: {freelist_count})"
+            ));
         }
     }
 
@@ -443,123 +503,130 @@ fn scalar_to_string(value: Option<&Value>) -> Option<String> {
     }
 }
 
+fn ticket_path(ticket_id: &str, suffix: &str) -> String {
+    format!(
+        "/v1/tickets/{}{suffix}",
+        percent_encode_component(ticket_id)
+    )
+}
+
+fn run_path(run_id: &str, suffix: &str) -> String {
+    format!("/v1/runs/{}{suffix}", percent_encode_component(run_id))
+}
+
 async fn run_ticket_command(
     client: &ApiClient,
     command: TicketCommand,
 ) -> anyhow::Result<CommandOutput> {
     match command {
-        TicketCommand::Create(args) => Ok(CommandOutput::Json(
-            client.post("/v1/tickets", args.into_request_body()).await?,
-        )),
-        TicketCommand::Edit(args) => {
-            let (ticket_id, body) = args.into_id_and_request_body();
+        TicketCommand::Create(args) => {
+            let (body, idempotency_key) = args.into_request();
             Ok(CommandOutput::Json(
                 client
-                    .patch(&format!("/v1/tickets/{ticket_id}"), body)
+                    .post_idempotent("/v1/tickets", body, idempotency_key.as_deref())
                     .await?,
             ))
         }
-        TicketCommand::List => Ok(CommandOutput::Json(client.get("/v1/tickets").await?)),
+        TicketCommand::Edit(args) => {
+            let (ticket_id, body) = args.into_id_and_request_body();
+            Ok(CommandOutput::Json(
+                client.patch(&ticket_path(&ticket_id, ""), body).await?,
+            ))
+        }
+        TicketCommand::List(args) => {
+            Ok(CommandOutput::Json(client.get(&args.request_path()).await?))
+        }
         TicketCommand::Show { ticket_id } => Ok(CommandOutput::Json(
-            client.get(&format!("/v1/tickets/{ticket_id}")).await?,
+            client.get(&ticket_path(&ticket_id, "")).await?,
         )),
         TicketCommand::Comment { ticket_id, body } => Ok(CommandOutput::Json(
             client
                 .post(
-                    &format!("/v1/tickets/{ticket_id}/comments"),
+                    &ticket_path(&ticket_id, "/comments"),
                     json!({ "body": body }),
                 )
                 .await?,
         )),
         TicketCommand::Events { ticket_id } => Ok(CommandOutput::Json(
-            client
-                .get(&format!("/v1/tickets/{ticket_id}/events"))
-                .await?,
+            client.get(&ticket_path(&ticket_id, "/events")).await?,
         )),
         TicketCommand::Export { ticket_id, format } => match format {
             ExportFormat::Json => Ok(CommandOutput::Json(
-                client
-                    .get(&format!("/v1/tickets/{ticket_id}/export/json"))
-                    .await?,
+                client.get(&ticket_path(&ticket_id, "/export/json")).await?,
             )),
             ExportFormat::Markdown => Ok(CommandOutput::Text(
                 client
-                    .get_text(&format!("/v1/tickets/{ticket_id}/export/markdown"))
+                    .get_text(&ticket_path(&ticket_id, "/export/markdown"))
                     .await?,
             )),
         },
         TicketCommand::Analyze { ticket_id } => Ok(CommandOutput::Json(
             client
-                .post(&format!("/v1/tickets/{ticket_id}/analyze"), json!({}))
+                .post(&ticket_path(&ticket_id, "/analyze"), json!({}))
                 .await?,
         )),
         TicketCommand::Analysis { ticket_id } => Ok(CommandOutput::Json(
-            client
-                .get(&format!("/v1/tickets/{ticket_id}/analysis"))
-                .await?,
+            client.get(&ticket_path(&ticket_id, "/analysis")).await?,
         )),
         TicketCommand::Decompose { ticket_id } => Ok(CommandOutput::Json(
             client
-                .post(&format!("/v1/tickets/{ticket_id}/decompose"), json!({}))
+                .post(&ticket_path(&ticket_id, "/decompose"), json!({}))
                 .await?,
         )),
         TicketCommand::Plan { ticket_id } => Ok(CommandOutput::Json(
             client
-                .post(&format!("/v1/tickets/{ticket_id}/plan"), json!({}))
+                .post(&ticket_path(&ticket_id, "/plan"), json!({}))
                 .await?,
         )),
         TicketCommand::PlanShow { ticket_id } => Ok(CommandOutput::Json(
-            client.get(&format!("/v1/tickets/{ticket_id}/plan")).await?,
+            client.get(&ticket_path(&ticket_id, "/plan")).await?,
         )),
         TicketCommand::Policy { ticket_id, mode } => Ok(CommandOutput::Json(
             client
-                .post(
-                    &format!("/v1/tickets/{ticket_id}/policy"),
-                    json!({ "mode": mode }),
-                )
+                .post(&ticket_path(&ticket_id, "/policy"), json!({ "mode": mode }))
                 .await?,
         )),
         TicketCommand::Approve { ticket_id } => Ok(CommandOutput::Json(
             client
-                .post(&format!("/v1/tickets/{ticket_id}/approve"), json!({}))
+                .post(&ticket_path(&ticket_id, "/approve"), json!({}))
                 .await?,
         )),
         TicketCommand::Reject { ticket_id, reason } => Ok(CommandOutput::Json(
             client
                 .post(
-                    &format!("/v1/tickets/{ticket_id}/reject"),
+                    &ticket_path(&ticket_id, "/reject"),
                     json!({ "reason": reason }),
                 )
                 .await?,
         )),
         TicketCommand::Run { ticket_id } => Ok(CommandOutput::Json(
             client
-                .post(&format!("/v1/tickets/{ticket_id}/run"), json!({}))
+                .post(&ticket_path(&ticket_id, "/run"), json!({}))
                 .await?,
         )),
         TicketCommand::Stop { ticket_id } => Ok(CommandOutput::Json(
             client
-                .post(&format!("/v1/tickets/{ticket_id}/stop"), json!({}))
+                .post(&ticket_path(&ticket_id, "/stop"), json!({}))
                 .await?,
         )),
         TicketCommand::Retry { ticket_id } => Ok(CommandOutput::Json(
             client
-                .post(&format!("/v1/tickets/{ticket_id}/retry"), json!({}))
+                .post(&ticket_path(&ticket_id, "/retry"), json!({}))
                 .await?,
         )),
         TicketCommand::Accept { ticket_id } => Ok(CommandOutput::Json(
             client
-                .post(&format!("/v1/tickets/{ticket_id}/accept"), json!({}))
+                .post(&ticket_path(&ticket_id, "/accept"), json!({}))
                 .await?,
         )),
         TicketCommand::Close { ticket_id } => Ok(CommandOutput::Json(
             client
-                .post(&format!("/v1/tickets/{ticket_id}/close"), json!({}))
+                .post(&ticket_path(&ticket_id, "/close"), json!({}))
                 .await?,
         )),
         TicketCommand::Cancel { ticket_id } => Ok(CommandOutput::Json(
             client
-                .post(&format!("/v1/tickets/{ticket_id}/cancel"), json!({}))
+                .post(&ticket_path(&ticket_id, "/cancel"), json!({}))
                 .await?,
         )),
     }
@@ -576,7 +643,12 @@ impl ApiClient {
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             token,
-            http: reqwest::Client::new(),
+            http: reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(5))
+                .timeout(std::time::Duration::from_secs(300))
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .expect("build Tea CLI HTTP client"),
         }
     }
 
@@ -588,8 +660,17 @@ impl ApiClient {
         self.send(self.http.post(self.url(path)).json(&body)).await
     }
 
-    async fn put(&self, path: &str, body: Value) -> anyhow::Result<Value> {
-        self.send(self.http.put(self.url(path)).json(&body)).await
+    async fn post_idempotent(
+        &self,
+        path: &str,
+        body: Value,
+        idempotency_key: Option<&str>,
+    ) -> anyhow::Result<Value> {
+        let mut request = self.http.post(self.url(path)).json(&body);
+        if let Some(key) = idempotency_key {
+            request = request.header("Idempotency-Key", key);
+        }
+        self.send(request).await
     }
 
     async fn patch(&self, path: &str, body: Value) -> anyhow::Result<Value> {
@@ -607,10 +688,10 @@ impl ApiClient {
 
     async fn send_text(&self, request: reqwest::RequestBuilder) -> anyhow::Result<String> {
         let response = request.bearer_auth(&self.token).send().await?;
-        let status = response.status();
-        let body = response.text().await?;
+        let (status, body) =
+            read_response_text_limited(response, MAX_TEA_API_RESPONSE_BYTES, "Tea API").await?;
         if !status.is_success() {
-            anyhow::bail!("Tea API returned {status}: {body}");
+            anyhow::bail!("Tea API returned {status}: {}", error_body_preview(&body));
         }
         Ok(body)
     }
@@ -625,21 +706,152 @@ mod tests {
     use super::*;
 
     #[test]
+    fn hook_intake_file_reader_rejects_oversized_input_before_json_parsing() {
+        let oversized = vec![b' '; MAX_HOOK_INTAKE_FILE_BYTES + 1];
+        let error = parse_hook_intake_payload(std::io::Cursor::new(oversized), "oversized.json")
+            .unwrap_err();
+        assert!(error.to_string().contains("exceeds the"));
+        assert!(error.to_string().contains("byte limit"));
+    }
+
+    #[test]
+    fn hook_intake_file_reader_parses_bounded_json() {
+        let payload = parse_hook_intake_payload(
+            std::io::Cursor::new(br#"{"source":"hook","text":"bounded"}"#),
+            "bounded.json",
+        )
+        .unwrap();
+        assert_eq!(payload["source"], "hook");
+        assert_eq!(payload["text"], "bounded");
+    }
+
+    fn spawn_raw_http_server(response: String) -> (String, std::thread::JoinHandle<()>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            use std::io::{Read as _, Write as _};
+
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request).unwrap();
+            stream.write_all(response.as_bytes()).unwrap();
+            stream.flush().unwrap();
+        });
+        (format!("http://{address}"), server)
+    }
+
+    fn spawn_capturing_http_server(
+        response: String,
+    ) -> (
+        String,
+        std::sync::mpsc::Receiver<String>,
+        std::thread::JoinHandle<()>,
+    ) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            use std::io::{Read as _, Write as _};
+
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 4096];
+            let read = stream.read(&mut request).unwrap();
+            sender
+                .send(String::from_utf8_lossy(&request[..read]).to_string())
+                .unwrap();
+            stream.write_all(response.as_bytes()).unwrap();
+            stream.flush().unwrap();
+        });
+        (format!("http://{address}"), receiver, server)
+    }
+
+    #[tokio::test]
+    async fn cli_response_reader_rejects_oversized_chunked_body() {
+        let response = concat!(
+            "HTTP/1.1 200 OK\r\n",
+            "Transfer-Encoding: chunked\r\n",
+            "Connection: close\r\n\r\n",
+            "5\r\n12345\r\n",
+            "5\r\n67890\r\n",
+            "0\r\n\r\n"
+        )
+        .to_string();
+        let (url, server) = spawn_raw_http_server(response);
+        let response = reqwest::Client::new().get(url).send().await.unwrap();
+
+        let error = read_response_text_limited(response, 8, "Tea API")
+            .await
+            .unwrap_err();
+
+        server.join().unwrap();
+        assert!(error.to_string().contains("8-byte limit"));
+    }
+
+    #[test]
+    fn cli_error_preview_is_bounded_and_single_line() {
+        let body = format!("first\nsecond\t{}", "x".repeat(600));
+        let preview = error_body_preview(&body);
+
+        assert!(!preview
+            .chars()
+            .any(|character| matches!(character, '\n' | '\r' | '\t')));
+        assert!(preview.ends_with("..."));
+        assert!(preview.chars().count() <= MAX_ERROR_PREVIEW_CHARS + 3);
+    }
+
+    #[tokio::test]
+    async fn cli_http_errors_do_not_echo_unbounded_multiline_bodies() {
+        let body = format!("first\nsecond\t{}", "x".repeat(600));
+        let response = format!(
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let (url, server) = spawn_raw_http_server(response);
+        let client = ApiClient::new(url, "test-token".to_string());
+
+        let message = client.get("/v1/status").await.unwrap_err().to_string();
+
+        server.join().unwrap();
+        assert!(message.contains("500 Internal Server Error"));
+        assert!(!message
+            .chars()
+            .any(|character| matches!(character, '\n' | '\r' | '\t')));
+        assert!(message.ends_with("..."));
+        assert!(message.chars().count() < 600);
+    }
+
+    #[test]
+    fn api_paths_encode_utf8_and_reserved_characters() {
+        assert_eq!(
+            ticket_path("中文/é", "/events"),
+            "/v1/tickets/%E4%B8%AD%E6%96%87%2F%C3%A9/events"
+        );
+        assert_eq!(run_path("a/b c", "/stop"), "/v1/runs/a%2Fb%20c/stop");
+    }
+
+    #[test]
     fn format_status_includes_sqlite_schema_metadata() {
         let output = format_status(&json!({
             "service": "tea",
             "status": "ok",
+            "execution_provider": "loom",
             "store": {
                 "backend": "sqlite",
                 "schema_version": 1,
-                "supported_schema_version": 1
+                "supported_schema_version": 1,
+                "idempotency_key_count": 12,
+                "sqlite_page_count": 48,
+                "sqlite_freelist_count": 3
             }
         }));
 
         assert!(output.contains("Service: tea"));
         assert!(output.contains("Status: ok"));
+        assert!(output.contains("Execution provider: loom"));
         assert!(output.contains("Store: sqlite"));
         assert!(output.contains("SQLite schema: 1 (supported: 1)"));
+        assert!(output.contains("Idempotency keys: 12"));
+        assert!(output.contains("SQLite pages: 48 (free: 3)"));
     }
 
     #[test]
@@ -650,7 +862,10 @@ mod tests {
             "store": {
                 "backend": "memory",
                 "schema_version": null,
-                "supported_schema_version": null
+                "supported_schema_version": null,
+                "idempotency_key_count": null,
+                "sqlite_page_count": null,
+                "sqlite_freelist_count": null
             }
         }));
 
@@ -658,6 +873,8 @@ mod tests {
         assert!(output.contains("Status: ok"));
         assert!(output.contains("Store: memory"));
         assert!(output.contains("SQLite schema: n/a"));
+        assert!(!output.contains("Idempotency keys:"));
+        assert!(!output.contains("SQLite pages:"));
     }
 
     #[test]
@@ -678,46 +895,26 @@ mod tests {
     }
 
     #[test]
-    fn update_config_notifications_preserves_policy_fields() {
-        let updated = update_config_notifications(
-            json!({
-                "notifications_enabled": true,
-                "human_ticket_default_approval_policy": "human_before_execute",
-                "hook_ticket_default_approval_policy": "plan_only"
-            }),
-            false,
-        );
+    fn config_notification_patch_contains_only_notification_field() {
+        let patch = config_patch_payload(Some(false), None, None);
 
-        assert_eq!(updated["notifications_enabled"], false);
-        assert_eq!(
-            updated["human_ticket_default_approval_policy"],
-            "human_before_execute"
-        );
-        assert_eq!(updated["hook_ticket_default_approval_policy"], "plan_only");
+        assert_eq!(patch, json!({ "notifications_enabled": false }));
     }
 
     #[test]
-    fn update_config_fields_can_patch_all_local_config_fields() {
-        let updated = update_config_fields(
-            json!({
-                "notifications_enabled": true,
-                "human_ticket_default_approval_policy": "human_before_execute",
-                "hook_ticket_default_approval_policy": "plan_only"
-            }),
+    fn config_patch_can_include_all_local_config_fields() {
+        let patch = config_patch_payload(
             Some(false),
             Some("human_before_completion".to_string()),
             Some("manual_only".to_string()),
         );
 
-        assert_eq!(updated["notifications_enabled"], false);
+        assert_eq!(patch["notifications_enabled"], false);
         assert_eq!(
-            updated["human_ticket_default_approval_policy"],
+            patch["human_ticket_default_approval_policy"],
             "human_before_completion"
         );
-        assert_eq!(
-            updated["hook_ticket_default_approval_policy"],
-            "manual_only"
-        );
+        assert_eq!(patch["hook_ticket_default_approval_policy"], "manual_only");
     }
 
     #[test]
@@ -737,6 +934,71 @@ mod tests {
             } => assert_eq!(run_id, "run-456"),
             other => panic!("expected run retry command, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn create_commands_parse_idempotency_keys() {
+        let ticket = Cli::try_parse_from([
+            "tea",
+            "ticket",
+            "create",
+            "--title",
+            "Retry-safe create",
+            "--description",
+            "Create this logical request only once.",
+            "--idempotency-key",
+            "ticket-request-1",
+        ])
+        .unwrap();
+        let Command::Ticket {
+            command: TicketCommand::Create(args),
+        } = ticket.command
+        else {
+            panic!("expected ticket create command");
+        };
+        assert_eq!(args.idempotency_key.as_deref(), Some("ticket-request-1"));
+
+        let hook = Cli::try_parse_from([
+            "tea",
+            "hook",
+            "intake",
+            "--file",
+            "hook.json",
+            "--idempotency-key",
+            "hook-request-1",
+        ])
+        .unwrap();
+        let Command::Hook {
+            command: HookCommand::Intake {
+                idempotency_key, ..
+            },
+        } = hook.command
+        else {
+            panic!("expected Hook intake command");
+        };
+        assert_eq!(idempotency_key.as_deref(), Some("hook-request-1"));
+    }
+
+    #[tokio::test]
+    async fn idempotent_post_sends_the_requested_header() {
+        let response =
+            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}".to_string();
+        let (url, request, server) = spawn_capturing_http_server(response);
+        let client = ApiClient::new(url, "test-token".to_string());
+
+        client
+            .post_idempotent(
+                "/v1/tickets",
+                json!({ "title": "Test", "description": "Test description" }),
+                Some("cli-idempotency-1"),
+            )
+            .await
+            .unwrap();
+
+        server.join().unwrap();
+        let request = request.recv().unwrap().to_ascii_lowercase();
+        assert!(request.contains("idempotency-key: cli-idempotency-1\r\n"));
+        assert!(request.contains("authorization: bearer test-token\r\n"));
     }
 
     #[test]
@@ -760,6 +1022,45 @@ mod tests {
             }
             other => panic!("expected ticket policy command, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn ticket_list_parses_optional_pagination_and_filters() {
+        let parsed = Cli::try_parse_from([
+            "tea",
+            "ticket",
+            "list",
+            "--status",
+            "open",
+            "--source",
+            "hook",
+            "--limit",
+            "25",
+            "--cursor",
+            "v1-000000000000000a-open-hook",
+        ])
+        .unwrap();
+        let Command::Ticket {
+            command: TicketCommand::List(args),
+        } = parsed.command
+        else {
+            panic!("expected ticket list command");
+        };
+        assert_eq!(
+            args.request_path(),
+            "/v1/tickets?status=open&source=hook&limit=25&cursor=v1-000000000000000a-open-hook"
+        );
+
+        let legacy = Cli::try_parse_from(["tea", "ticket", "list"]).unwrap();
+        let Command::Ticket {
+            command: TicketCommand::List(args),
+        } = legacy.command
+        else {
+            panic!("expected legacy ticket list command");
+        };
+        assert_eq!(args.request_path(), "/v1/tickets");
+        assert!(Cli::try_parse_from(["tea", "ticket", "list", "--limit", "0"]).is_err());
+        assert!(Cli::try_parse_from(["tea", "ticket", "list", "--limit", "201"]).is_err());
     }
 
     #[test]

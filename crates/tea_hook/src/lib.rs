@@ -59,6 +59,16 @@ pub fn normalize_hook_intake(request: &HookIntakeRequest) -> NormalizedHookTicke
     );
     append_context(&mut description, "cwd", &request.context.cwd);
     append_context(&mut description, "app", &request.context.app);
+    if !request.attachments.is_empty() {
+        description.push_str("\n--- Hook attachments (untrusted references) ---\n");
+        for (index, attachment) in request.attachments.iter().enumerate() {
+            description.push_str(&format!("attachment[{index}].kind: {}\n", attachment.kind));
+            description.push_str(&format!(
+                "attachment[{index}].reference: {}\n",
+                attachment.reference
+            ));
+        }
+    }
 
     NormalizedHookTicket {
         title,
@@ -111,11 +121,20 @@ mod tests {
                 cwd: Some("C:\\repo".to_string()),
                 app: Some("terminal".to_string()),
             },
-            attachments: vec![],
+            attachments: vec![HookAttachment {
+                kind: "screenshot".to_string(),
+                reference: "hook://capture/123".to_string(),
+            }],
         });
 
         assert_eq!(normalized.source, TicketSource::Hook);
         assert!(normalized.labels.contains(&"context:untrusted".to_string()));
         assert!(normalized.description.contains("cargo test failed"));
+        assert!(normalized
+            .description
+            .contains("attachment[0].kind: screenshot"));
+        assert!(normalized
+            .description
+            .contains("attachment[0].reference: hook://capture/123"));
     }
 }

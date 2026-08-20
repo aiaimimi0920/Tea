@@ -19,6 +19,10 @@ release/
 *.log
 *.pid
 
+# Local tooling state (not part of the build)
+.memsearch/
+graphify-out/
+
 # Secrets / local env
 .env
 .env.*
@@ -28,6 +32,7 @@ release/
 *.pfx
 *secret*
 *token*
+!scripts/resolve-tea-token.ps1
 *credential*
 *credentials*
 *cookies*

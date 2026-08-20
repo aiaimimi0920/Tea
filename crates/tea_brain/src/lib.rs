@@ -1,9 +1,11 @@
 #![forbid(unsafe_code)]
 
 use async_trait::async_trait;
+use serde::de::DeserializeOwned;
 use tea_core::{
     ApprovalPolicy, Plan, PlanStep, RiskLevel, Ticket, TicketAnalysis, TicketComment, TicketSource,
 };
+use tea_http_read::{error_body_preview, read_response_bytes_limited, ReadBytesLimitedError};
 use thiserror::Error;
 
 pub const TEA_TICKET_DECOMPOSE_CAPABILITY: &str = "tea.ticket.decompose.v1";
@@ -20,6 +22,37 @@ pub enum BrainError {
 }
 
 pub type BrainResult<T> = Result<T, BrainError>;
+
+const MAX_BRAIN_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+
+async fn read_json_response_limited<T: DeserializeOwned>(
+    response: reqwest::Response,
+    max_bytes: usize,
+    context: &str,
+) -> BrainResult<T> {
+    let (status, body) = read_response_bytes_limited(response, max_bytes)
+        .await
+        .map_err(|error| match error {
+            ReadBytesLimitedError::BodyTooLarge { max_bytes } => BrainError::InvalidResponse(
+                format!("{context} body exceeded the {max_bytes}-byte limit"),
+            ),
+            ReadBytesLimitedError::LengthOverflow => {
+                BrainError::InvalidResponse(format!("{context} body length overflowed"))
+            }
+            ReadBytesLimitedError::Read(source) => BrainError::Request(source),
+        })?;
+
+    if !status.is_success() {
+        let preview = error_body_preview(&String::from_utf8_lossy(&body));
+        return Err(BrainError::InvalidResponse(format!(
+            "{context} returned HTTP {status}: {preview}"
+        )));
+    }
+
+    serde_json::from_slice(&body).map_err(|error| {
+        BrainError::InvalidResponse(format!("{context} body was not valid JSON: {error}"))
+    })
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BrainProviderMetadata {
@@ -136,6 +169,9 @@ pub struct LoomCapabilityBrainProvider {
     base_url: String,
     auth_token: Option<String>,
     http: reqwest::Client,
+    /// Per-request timeout applied via [`reqwest::RequestBuilder::timeout`]
+    /// when the client is shared and carries no client-level total timeout.
+    request_timeout: Option<std::time::Duration>,
 }
 
 impl LoomCapabilityBrainProvider {
@@ -143,7 +179,30 @@ impl LoomCapabilityBrainProvider {
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             auth_token,
-            http: reqwest::Client::new(),
+            http: reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(5))
+                .timeout(std::time::Duration::from_secs(300))
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .expect("build Tea Brain HTTP client"),
+            request_timeout: None,
+        }
+    }
+
+    /// Reuse an existing [`reqwest::Client`] (e.g. one shared connection pool
+    /// per process) and enforce `request_timeout` per request instead of
+    /// through the client.
+    pub fn new_with_client(
+        base_url: String,
+        auth_token: Option<String>,
+        http: reqwest::Client,
+        request_timeout: std::time::Duration,
+    ) -> Self {
+        Self {
+            base_url: base_url.trim_end_matches('/').to_string(),
+            auth_token,
+            http,
+            request_timeout: Some(request_timeout),
         }
     }
 
@@ -152,6 +211,10 @@ impl LoomCapabilityBrainProvider {
     }
 
     fn authorize(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        let request = match self.request_timeout {
+            Some(timeout) => request.timeout(timeout),
+            None => request,
+        };
         match &self.auth_token {
             Some(token) if !token.trim().is_empty() => request.bearer_auth(token),
             _ => request,
@@ -201,10 +264,13 @@ impl TeaBrainProvider for LoomCapabilityBrainProvider {
                     }),
             )
             .send()
-            .await?
-            .error_for_status()?
-            .json::<LoomInvokeResponse>()
             .await?;
+        let response = read_json_response_limited::<LoomInvokeResponse>(
+            response,
+            MAX_BRAIN_RESPONSE_BYTES,
+            "Loom capability invocation",
+        )
+        .await?;
         if response.status != "succeeded" {
             return Err(BrainError::InvalidResponse(format!(
                 "Loom invoke status was {}",
@@ -233,6 +299,22 @@ impl RuntimeTeaBrainProvider {
 
     pub fn loom(base_url: String, auth_token: Option<String>) -> Self {
         Self::Loom(LoomCapabilityBrainProvider::new(base_url, auth_token))
+    }
+
+    /// Loom provider variant backed by a shared [`reqwest::Client`] with a
+    /// per-request timeout; see [`LoomCapabilityBrainProvider::new_with_client`].
+    pub fn loom_with_client(
+        base_url: String,
+        auth_token: Option<String>,
+        http: reqwest::Client,
+        request_timeout: std::time::Duration,
+    ) -> Self {
+        Self::Loom(LoomCapabilityBrainProvider::new_with_client(
+            base_url,
+            auth_token,
+            http,
+            request_timeout,
+        ))
     }
 }
 
@@ -477,5 +559,119 @@ mod tests {
         assert_eq!(body["caller"], "tea");
         assert_eq!(body["capability"], TEA_TICKET_DECOMPOSE_CAPABILITY);
         assert_eq!(body["input"]["ticket"]["id"], serde_json::json!(ticket.id));
+    }
+
+    #[tokio::test]
+    async fn brain_response_reader_rejects_oversized_json() {
+        use axum::{body::Body, routing::get};
+
+        async fn handler() -> Body {
+            Body::from("123456789")
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, Router::new().route("/", get(handler)))
+                .await
+                .unwrap();
+        });
+        let response = reqwest::Client::new()
+            .get(format!("http://{address}"))
+            .send()
+            .await
+            .unwrap();
+
+        let error = read_json_response_limited::<serde_json::Value>(response, 8, "test")
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(error, BrainError::InvalidResponse(message) if message.contains("8-byte limit"))
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn brain_response_reader_sanitizes_upstream_error_preview() {
+        use axum::{http::StatusCode, routing::get};
+
+        async fn handler() -> (StatusCode, String) {
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("first\r\nsecond\t\u{1b}\u{2028}{}", "x".repeat(600)),
+            )
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, Router::new().route("/", get(handler)))
+                .await
+                .unwrap();
+        });
+        let response = reqwest::Client::new()
+            .get(format!("http://{address}"))
+            .send()
+            .await
+            .unwrap();
+
+        let error = read_json_response_limited::<serde_json::Value>(response, 8 * 1024, "test")
+            .await
+            .unwrap_err();
+        let BrainError::InvalidResponse(message) = error else {
+            panic!("expected an invalid-response error");
+        };
+
+        assert!(message.contains("HTTP 502 Bad Gateway: first  second  "));
+        assert!(message.ends_with("..."));
+        assert!(!message.chars().any(char::is_control), "{message:?}");
+        assert!(!message.contains('\u{2028}'), "{message:?}");
+        assert!(!message.contains('\u{2029}'), "{message:?}");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn loom_brain_provider_does_not_follow_redirects() {
+        use axum::response::Redirect;
+
+        async fn handler() -> Redirect {
+            Redirect::temporary("http://127.0.0.1:1/redirected")
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, Router::new().route("/v1/invoke", post(handler)))
+                .await
+                .unwrap();
+        });
+        let ticket = Ticket::new(
+            TicketId::new(),
+            "Redirect".to_string(),
+            "Reject an authenticated capability redirect.".to_string(),
+            TicketSource::Human,
+            ActorRef::human("vmjcv"),
+        );
+        let request = DecomposeTicketRequest::new(
+            ticket,
+            Vec::new(),
+            DecomposeContext {
+                workspace_root: None,
+                platform_mode: "test".to_string(),
+                requested_by: "test".to_string(),
+            },
+        );
+        let provider = LoomCapabilityBrainProvider::new(
+            format!("http://{address}"),
+            Some("loom-token".to_string()),
+        );
+
+        let error = provider.decompose_ticket(request).await.unwrap_err();
+
+        assert!(
+            matches!(error, BrainError::InvalidResponse(message) if message.contains("HTTP 307"))
+        );
+        server.abort();
     }
 }
