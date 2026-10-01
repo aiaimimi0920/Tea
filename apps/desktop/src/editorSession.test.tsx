@@ -15,10 +15,10 @@ let tickets: TeaTicket[];
 let patches: { id: string; body: Record<string, unknown> }[];
 let failSave: boolean;
 
-function button(text: string): HTMLButtonElement {
-  const found = [...container.querySelectorAll("button")].find((node) => node.textContent?.trim() === text);
-  if (!found) throw new Error(`Missing button ${text}`);
-  return found;
+function button(text: string, scope: ParentNode = container): HTMLButtonElement {
+  const matches = [...scope.querySelectorAll("button")].filter((node) => node.textContent?.trim() === text);
+  if (matches.length !== 1) throw new Error(`Expected one button ${text}, found ${matches.length}`);
+  return matches[0];
 }
 async function click(node: HTMLElement) { await act(async () => { node.click(); }); }
 async function select(title: string) {
@@ -119,7 +119,7 @@ describe("editor sessions protect work-order identity and untouched fields", () 
   it("keeps a failed draft and takes a fresh baseline after cancel/reopen", async () => {
     await edit(); await fill("Title", "Retry this title"); failSave = true;
     await click(button("Save changes")); expect(field("Title").value).toBe("Retry this title");
-    failSave = false; await click(button("Cancel")); tickets[0].description = "Latest description";
+    failSave = false; await click(button("Cancel", container.querySelector(".issue-edit-form")!)); tickets[0].description = "Latest description";
     await click(button("Refresh")); await click(button("Edit issue"));
     expect(field("Description").value).toBe("Latest description");
     await click(button("Save changes")); expect(patches).toEqual([]);

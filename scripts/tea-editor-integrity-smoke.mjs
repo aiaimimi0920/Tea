@@ -17,7 +17,9 @@ export async function verifyEditorSessions(page, timeoutMs, screenshotPath) {
   const [a, b] = tickets;
   const ticketPath = (id) => `/v1/tickets/${encodeURIComponent(id)}`;
   const row = (title) => page.locator(".issue-item").filter({ hasText: title });
-  const button = (name) => page.getByRole("button", { name, exact: true });
+  const button = (name) => page.locator(name === "Refresh"
+    ? ".refresh-control" : name === "Edit issue" ? ".issue-detail-actions" : "form.issue-edit-form")
+    .getByRole("button", { name, exact: true });
   const editor = page.locator("form.issue-edit-form");
   // React serializes a textarea's initial value inside the wrapping label;
   // exact label text then includes that value. Its unique placeholder is stable.
@@ -82,7 +84,8 @@ export async function verifyEditorSessions(page, timeoutMs, screenshotPath) {
   assert.equal((await request("GET", ticketPath(a.id))).description, "Newest external description");
   await button("Edit issue").click();
   assert.equal(await fieldValue("Description", "reopen-A-after-noop"), "Newest external description");
-  await button("Cancel").click();
+  await editor.getByRole("button", { name: "Cancel", exact: true }).click();
+  await editor.waitFor({ state: "hidden", timeout: timeoutMs });
   await page.screenshot({ path: screenshotPath });
   return { ticketIds: tickets.map((ticket) => ticket.id), untouchedFieldsPreserved: true, screenshotPath };
 }
