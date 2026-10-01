@@ -349,6 +349,7 @@ import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { verifyCompletionReview } from "./tea-completion-review-smoke.mjs";
 import { verifyEditorSessions } from "./tea-editor-integrity-smoke.mjs";
+import { verifyReviewDrafts } from "./tea-review-drafts-smoke.mjs";
 
 const playwrightRoot = process.env.PLAYWRIGHT_PACKAGE_ROOT;
 if (!playwrightRoot) throw new Error("PLAYWRIGHT_PACKAGE_ROOT is required");
@@ -861,6 +862,12 @@ try {
   );
   markProgress("editor-sessions:complete");
 
+  markProgress("review-drafts:start");
+  const reviewDrafts = await verifyReviewDrafts(
+    page, timeoutMs, path.join(screenshotRoot, "tea-review-drafts.png"),
+  );
+  markProgress("review-drafts:complete");
+
   await writeResult({
     status: "passed",
     native_tauri_runtime: nativeTauriRuntime,
@@ -879,6 +886,7 @@ try {
     completionReview,
     acceptedApprovalReview,
     editorSessions,
+    reviewDrafts,
     pageUrl: page.url(),
     pageTitle: await page.title().catch(() => ""),
     pageStates,
@@ -909,6 +917,8 @@ Copy-Item -LiteralPath (Join-Path $PSScriptRoot "tea-completion-review-smoke.mjs
     -Destination (Join-Path $artifactRoot "tea-completion-review-smoke.mjs")
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "tea-editor-integrity-smoke.mjs") `
     -Destination (Join-Path $artifactRoot "tea-editor-integrity-smoke.mjs")
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot "tea-review-drafts-smoke.mjs") `
+    -Destination (Join-Path $artifactRoot "tea-review-drafts-smoke.mjs")
 $nodeExe = (Get-Command node -ErrorAction Stop).Source
 
 try {

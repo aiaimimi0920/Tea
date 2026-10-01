@@ -21,7 +21,7 @@ function renderDetail(status: string, busy = false): string {
     onResetLabels: noop, onRetryRun: noop, onSaveConfiguration: noop,
     onSectionChange: noop, onStopRun: noop, onToggleWatch: noop,
     onToggleLabelEditor: noop, onBeginEdit: noop, onCancelEdit: noop, onSubmitEdit: noop,
-    showEditIssue: false,
+    showEditIssue: false, reviewScope: { ticketId: "ticket-1", connection: {} },
     queueNavigation: {
       current: 1, total: 1, firstId: "ticket-1", lastId: "ticket-1",
       isOutsideQueue: false, previousId: null, nextId: null,

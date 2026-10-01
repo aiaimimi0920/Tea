@@ -32,6 +32,8 @@ import {
 import { badgeToneForRisk, type IssueActionHint, type IssueSignal } from "./issueSignals";
 import type { IssueQueueNavigation, RepoSection } from "./issueTypes";
 import { canRetryRun, canStopRun } from "./runLifecycle";
+import { CommentEditor, RejectReasonForm } from "./ReviewForms";
+import type { ReviewDraftScope, ReviewDraftSubmission } from "./reviewDraft";
 import { IssueEditForm } from "./IssueEditForm";
 import type { TicketEditSubmission } from "./ticketEditing";
 import { isTicketActionDisabled } from "./ticketLifecycle";
@@ -53,6 +55,7 @@ export const IssueDetail = memo(function IssueDetail({
   analysis,
   busy,
   comments,
+  reviewScope,
   hasLocalNotes,
   events,
   exportDownloadBusy,
@@ -94,6 +97,7 @@ export const IssueDetail = memo(function IssueDetail({
   analysis: TeaAnalysis | null;
   busy: boolean;
   comments: TeaComment[];
+  reviewScope: ReviewDraftScope;
   hasLocalNotes: boolean;
   events: TeaEvent[];
   exportDownloadBusy: boolean;
@@ -106,11 +110,11 @@ export const IssueDetail = memo(function IssueDetail({
   onCopyLink: () => void;
   onAction: (action: Parameters<typeof ticketAction>[1]) => void;
   onApplyPolicy: (mode: string) => void;
-  onComment: (body: string) => Promise<boolean>;
+  onComment: (submission: ReviewDraftSubmission) => Promise<boolean>;
   onDownloadExport: (format: "json" | "markdown") => void;
   onExport: (format: "json" | "markdown") => void;
   onNavigateIssueQueue: (ticketId: string | null) => void;
-  onReject: (reason: string) => Promise<boolean>;
+  onReject: (submission: ReviewDraftSubmission) => Promise<boolean>;
   onRemoveLabel: (label: string) => void;
   onResetLabels: () => void;
   onRetryRun: (runId: string) => void;
@@ -290,6 +294,7 @@ export const IssueDetail = memo(function IssueDetail({
             analysis={analysis}
             busy={busy}
             comments={comments}
+            reviewScope={reviewScope}
             events={events}
             exportDownloadBusy={exportDownloadBusy}
             exportPreview={exportPreview}
@@ -431,7 +436,7 @@ export const IssueDetail = memo(function IssueDetail({
                   </div>
                   {group.key === "approval" ? (
                     <>
-                      <RejectReasonForm busy={busy || isClosedTicket(ticket)} onReject={onReject} />
+                      <RejectReasonForm scope={reviewScope} busy={busy || isClosedTicket(ticket)} onReject={onReject} />
                       <div className="policy-editor">
                         <label htmlFor="policy-editor-select">{t("Approval policy")}</label>
                         <select
@@ -544,43 +549,6 @@ function LabelEditor({
 }
 
 
-function RejectReasonForm({
-  busy,
-  onReject,
-}: {
-  busy: boolean;
-  onReject: (reason: string) => Promise<boolean>;
-}) {
-  // The reject reason is owned here so typing re-renders only this form.
-  // onReject reports whether the reject was applied; the reason clears only
-  // on success (failures keep the text for retry).
-  const [reason, setReason] = useState("");
-
-  return (
-    <form
-      className="reject-reason-form"
-      onSubmit={(event) => {
-        event.preventDefault();
-        void onReject(reason).then((rejected) => {
-          if (rejected) setReason("");
-        });
-      }}
-    >
-      <label htmlFor="reject-reason-input">{t("Reject with reason")}</label>
-      <textarea
-        disabled={busy}
-        id="reject-reason-input"
-        onChange={(event) => setReason(event.target.value)}
-        placeholder={t("Explain why this approval is rejected.")}
-        rows={2}
-        value={reason}
-      />
-      <button className="action-danger" disabled={busy} type="submit">
-        {t("Reject approval")}
-      </button>
-    </form>
-  );
-}
 
 function SettingsConfigEditor({
   busy,
@@ -857,6 +825,7 @@ function FocusedIssueSection({
   analysis,
   busy,
   comments,
+  reviewScope,
   events,
   exportDownloadBusy,
   exportPreview,
@@ -875,10 +844,11 @@ function FocusedIssueSection({
   analysis: TeaAnalysis | null;
   busy: boolean;
   comments: TeaComment[];
+  reviewScope: ReviewDraftScope;
   events: TeaEvent[];
   exportDownloadBusy: boolean;
   exportPreview: string;
-  onComment: (body: string) => Promise<boolean>;
+  onComment: (submission: ReviewDraftSubmission) => Promise<boolean>;
   onDownloadExport: (format: "json" | "markdown") => void;
   onExport: (format: "json" | "markdown") => void;
   onRetryRun: (runId: string) => void;
@@ -891,6 +861,7 @@ function FocusedIssueSection({
 }) {
   const editor = (
     <CommentEditor
+      scope={reviewScope}
       busy={busy}
       disabled={isClosedTicket(ticket)}
       onSubmit={onComment}
@@ -1331,92 +1302,6 @@ const ConversationStream = memo(function ConversationStream({
   );
 });
 
-function CommentEditor({
-  busy,
-  disabled,
-  onSubmit,
-}: {
-  busy: boolean;
-  disabled: boolean;
-  onSubmit: (body: string) => Promise<boolean>;
-}) {
-  // The comment draft is owned here so typing re-renders only this editor,
-  // not the whole App. onSubmit reports whether the comment was persisted;
-  // the draft clears only on success (failures keep the text for retry).
-  const [value, setValue] = useState("");
-  const [mode, setMode] = useState<"write" | "preview">("write");
-
-  const submit = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    void onSubmit(value).then((submitted) => {
-      if (submitted) setValue("");
-    });
-  };
-
-  return (
-    <form className="comment-editor" onSubmit={submit}>
-      <div className="comment-with-avatar">
-        <span className="comment-avatar">{t("Me")}</span>
-        <section className="issue-comment">
-          <header className="issue-comment-header">
-            <strong>{t("Leave a review comment")}</strong>
-            <span>{disabled ? t("terminal ticket") : t("markdown supported")}</span>
-          </header>
-          <div className="comment-editor-tabs" role="tablist" aria-label={t("Comment editor mode")}>
-            <button
-              aria-selected={mode === "write"}
-              className={mode === "write" ? "active" : ""}
-              onClick={() => setMode("write")}
-              role="tab"
-              type="button"
-            >
-              {t("Write")}
-            </button>
-            <button
-              aria-selected={mode === "preview"}
-              className={mode === "preview" ? "active" : ""}
-              onClick={() => setMode("preview")}
-              role="tab"
-              type="button"
-            >
-              {t("Preview comment")}
-            </button>
-          </div>
-          {mode === "write" ? (
-            <textarea
-              disabled={disabled || busy}
-              onChange={(event) => setValue(event.target.value)}
-              placeholder={
-                disabled
-                  ? "Closed and cancelled tickets are read-only."
-                  : "Write context, decisions, review notes, or acceptance evidence."
-              }
-              value={value}
-            />
-          ) : (
-            <div className="comment-preview">
-              <div className="markdown-body">
-                {value.trim() ? (
-                  value.split(/\n{2,}/).map((paragraph, index) => (
-                    <p key={`comment-preview-${index}`}>{paragraph}</p>
-                  ))
-                ) : (
-                  <p>{t("Nothing to preview yet.")}</p>
-                )}
-              </div>
-            </div>
-          )}
-          <footer className="comment-editor-footer">
-            <span>{t("Comments are durable and included in JSON/Markdown exports.")}</span>
-            <button disabled={disabled || busy || !value.trim()} type="submit">
-              {t("Comment")}
-            </button>
-          </footer>
-        </section>
-      </div>
-    </form>
-  );
-}
 
 function Runs({
   busy = false,

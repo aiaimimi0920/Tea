@@ -458,6 +458,12 @@ into edits that overwrite another update. No-op saves send no PATCH; failed save
 keep the draft, and an older save response cannot close a newly opened editor.
 The API still uses last-write behavior when two clients deliberately edit the
 same field; this is not a server-side optimistic-concurrency contract.
+Review-comment and rejection drafts also belong to one task/connection visit.
+Navigation resets their text and comment preview; returning to a task starts a
+fresh draft. Stale callbacks cannot submit under a different visit or connection,
+and an older response cannot clear a newer draft. Failed same-task submissions
+retain their text for retry; successful submissions keep the existing review and
+approval-policy behavior.
 
 ## Ticket lifecycle contract
 

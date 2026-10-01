@@ -59,6 +59,7 @@ import {
   pretty,
   statusText,
 } from "./issueFormat";
+import type { ReviewDraftSubmission } from "./reviewDraft";
 import { ticketEditPatch, type TicketEditSubmission } from "./ticketEditing";
 import { IssueDetail } from "./IssueDetail";
 import { IssueQueue } from "./IssueQueue";
@@ -342,6 +343,8 @@ export default function App() {
     }),
     [authToken, serverUrl],
   );
+  const reviewScope = useMemo(() => ({ ticketId: selectedId ?? "", connection: options }), [selectedId, options]);
+  const reviewScopeRef = useRef(reviewScope);
   const optionsRef = useRef(options);
   const selectedIdRef = useRef(selectedId);
   const activeTicketRef = useRef<TeaTicket | null>(null);
@@ -358,6 +361,7 @@ export default function App() {
   const mutationInFlightRef = useRef(false);
   const exportDownloadInFlightRef = useRef(false);
   const detailGenerationRef = useRef(0);
+  reviewScopeRef.current = reviewScope;
   optionsRef.current = options;
   selectedIdRef.current = selectedId;
   autoRefreshRef.current = autoRefresh;
@@ -1421,17 +1425,19 @@ export default function App() {
   // Returns whether the reject was applied so RejectReasonForm can clear its
   // locally-owned reason only on success (mirrors the previous behavior where
   // the shared rejectReason state was cleared inside the success path).
-  const submitReject = useCallback(async (reason: string): Promise<boolean> => {
-    const id = selectedIdRef.current;
-    if (!id) return false;
-    const trimmed = reason.trim();
+  const submitReject = useCallback(async (submission: ReviewDraftSubmission): Promise<boolean> => {
+    const { scope, text } = submission;
+    if (!scope.ticketId || scope !== reviewScopeRef.current ||
+      scope.ticketId !== selectedIdRef.current || scope.connection !== optionsRef.current) return false;
+    const id = scope.ticketId;
+    const trimmed = text.trim();
     if (!trimmed) {
       notify("Reject reason is required");
       return false;
     }
     if (!beginMutation()) return false;
     try {
-      await rejectTicket(id, trimmed, optionsRef.current);
+      await rejectTicket(id, trimmed, scope.connection);
       notify("Approval rejected");
       await refreshRef.current();
       return true;
@@ -1541,17 +1547,19 @@ export default function App() {
   // Returns whether the comment was persisted so CommentEditor can clear its
   // locally-owned draft only on success (mirrors the previous behavior where
   // the shared commentDraft state was cleared inside the success path).
-  const submitComment = useCallback(async (body: string): Promise<boolean> => {
-    const id = selectedIdRef.current;
-    if (!id) return false;
-    const trimmed = body.trim();
+  const submitComment = useCallback(async (submission: ReviewDraftSubmission): Promise<boolean> => {
+    const { scope, text } = submission;
+    if (!scope.ticketId || scope !== reviewScopeRef.current ||
+      scope.ticketId !== selectedIdRef.current || scope.connection !== optionsRef.current) return false;
+    const id = scope.ticketId;
+    const trimmed = text.trim();
     if (!trimmed) {
       notify("Review comment cannot be empty");
       return false;
     }
     if (!beginMutation()) return false;
     try {
-      await addComment(id, trimmed, optionsRef.current);
+      await addComment(id, trimmed, scope.connection);
       notify("Review comment added");
       await refreshRef.current();
       return true;
@@ -1949,6 +1957,7 @@ export default function App() {
         </IssueQueue>
 
         <IssueDetail
+          reviewScope={reviewScope}
           activeSection={activeSection}
           analysis={analysis}
           busy={busy}
