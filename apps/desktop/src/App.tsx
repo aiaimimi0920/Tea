@@ -11,7 +11,6 @@ import {
   TeaRun,
   TeaSnapshot,
   TeaTicket,
-  UpdateTicketInput,
   addComment,
   createTicket,
   exportTicket,
@@ -54,14 +53,13 @@ import {
   filterableLabelsForTicket,
   formatTime,
   isClosedTicket,
-  isSystemLabel,
   issueNumber,
   localNotesForTicket,
   normalizeLabels,
-  operatorLabelsForTicket,
   pretty,
   statusText,
 } from "./issueFormat";
+import { ticketEditPatch, type TicketEditSubmission } from "./ticketEditing";
 import { IssueDetail } from "./IssueDetail";
 import { IssueQueue } from "./IssueQueue";
 import { NewIssuePanel } from "./NewIssuePanel";
@@ -87,7 +85,6 @@ import type {
   IssueSort,
   RepoSection,
   TicketDraft,
-  TicketEditDraft,
 } from "./issueTypes";
 
 type IssueAuthorFilter = string | null;
@@ -334,7 +331,7 @@ export default function App() {
   const [watchStates, setWatchStates] = useState<WatchStates>(() => readWatchStates());
   const [localNotes, setLocalNotes] = useState<LocalNotes>(() => readLocalNotes());
   const [showLabelEditor, setShowLabelEditor] = useState(false);
-  const [showEditIssue, setShowEditIssue] = useState(false);
+  const [editOwner, setEditOwner] = useState<{ ticketId: string; connection: TeaClientOptions } | null>(null);
   const [autoRefresh, setAutoRefresh] = useState<boolean>(() => readAutoRefreshPreference());
   const [lastRefreshedAt, setLastRefreshedAt] = useState<number | null>(null);
 
@@ -1283,6 +1280,7 @@ export default function App() {
 
   useEffect(() => {
     detailGenerationRef.current += 1;
+    setEditOwner(null);
     setSelectedTicket(null);
     setExportPreview("");
     setDetailError("");
@@ -1463,64 +1461,35 @@ export default function App() {
   // IssueEditForm seeds its local draft from the ticket when it mounts (i.e.
   // when editing opens), so opening the editor no longer copies state here.
   const beginEditIssue = useCallback(() => {
-    setShowEditIssue(true);
+    const ticketId = selectedIdRef.current;
+    if (ticketId) setEditOwner({ ticketId, connection: optionsRef.current });
   }, []);
 
   const cancelEditIssue = useCallback(() => {
-    setShowEditIssue(false);
+    setEditOwner(null);
   }, []);
 
-  const submitTicketEdit = useCallback(async (editDraft: TicketEditDraft) => {
-    const id = selectedIdRef.current;
-    const ticket = activeTicketRef.current;
-    if (!id || !ticket) return;
-    const nextTitle = editDraft.title.trim();
-    if (!nextTitle) {
+  const submitTicketEdit = useCallback(async (submission: TicketEditSubmission) => {
+    const owner = editOwner;
+    // Bind the save to the visible editor session, not whichever task/daemon
+    // happens to be selected when an older callback is invoked.
+    if (!owner || owner.ticketId !== submission.ticketId ||
+      selectedIdRef.current !== submission.ticketId || owner.connection !== optionsRef.current) return;
+    if (!submission.draft.title.trim()) {
       notify("Work order title is required");
       return;
     }
-    // Only send fields the operator actually changed so an edit cannot clobber
-    // untouched fields; the daemon leaves `undefined` fields alone.
-    const input: UpdateTicketInput = {};
-    if (nextTitle !== (ticket.title ?? "")) {
-      input.title = nextTitle;
-    }
-    if (editDraft.description !== (ticket.description ?? "")) {
-      input.description = editDraft.description;
-    }
-    const nextPriority = editDraft.priority.trim();
-    if (nextPriority !== (ticket.priority ?? "")) {
-      input.priority = nextPriority;
-    }
-    // Compare operator labels (system-derived labels are managed by the daemon
-    // and never sent from the edit form). Only send labels when they changed.
-    const currentOperatorLabels = operatorLabelsForTicket(ticket);
-    const nextOperatorLabels = editDraft.labels
-      .split(/[,\n]/)
-      .map((label) => label.trim())
-      .filter(Boolean)
-      .filter((label) => !isSystemLabel(label));
-    const dedupedNextLabels = Array.from(new Set(nextOperatorLabels));
-    const labelsChanged =
-      dedupedNextLabels.length !== currentOperatorLabels.length ||
-      dedupedNextLabels.some((label, index) => label !== currentOperatorLabels[index]);
-    if (labelsChanged) {
-      input.labels = dedupedNextLabels;
-    }
-    if (
-      input.title === undefined &&
-      input.description === undefined &&
-      input.priority === undefined &&
-      input.labels === undefined
-    ) {
+    const input = ticketEditPatch(submission.baseline, submission.draft);
+    const closeThisEditor = () => setEditOwner((current) => current === owner ? null : current);
+    if (Object.keys(input).length === 0) {
       notify("No changes to save");
-      setShowEditIssue(false);
+      closeThisEditor();
       return;
     }
     if (!beginMutation()) return;
     try {
-      await updateTicket(id, input, optionsRef.current);
-      setShowEditIssue(false);
+      await updateTicket(submission.ticketId, input, owner.connection);
+      closeThisEditor();
       notify("Work order updated");
       await refreshRef.current();
     } catch (error) {
@@ -1528,7 +1497,7 @@ export default function App() {
     } finally {
       endMutation();
     }
-  }, [beginMutation, endMutation, notify]);
+  }, [beginMutation, editOwner, endMutation, notify]);
 
   const saveLocalConfiguration = useCallback(async (config: Partial<TeaLocalConfig>) => {
     if (!beginMutation()) return;
@@ -2012,7 +1981,7 @@ export default function App() {
           onBeginEdit={beginEditIssue}
           onCancelEdit={cancelEditIssue}
           onSubmitEdit={submitTicketEdit}
-          showEditIssue={showEditIssue}
+          showEditIssue={editOwner?.ticketId === activeTicket?.id && editOwner?.connection === options}
           runs={runs}
           queueNavigation={issueQueueNavigation}
           selectedActionHint={selectedActionHint}

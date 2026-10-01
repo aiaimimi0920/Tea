@@ -27,6 +27,7 @@
     "@types/react-dom": "^19.0.0",
     "eslint": "^10.8.0",
     "eslint-plugin-react-hooks": "^7.1.1",
+    "happy-dom": "20.14.5",
     "playwright-core": "1.59.1",
     "typescript": "^5.0.0",
     "typescript-eslint": "^8.65.0",

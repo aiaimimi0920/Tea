@@ -449,6 +449,16 @@ Platform Core `/internal/tea/*`; and only Platform Core holds the Tea daemon
 bearer token. This preserves Tea as an independently runnable service while
 keeping credentials out of the browser.
 
+## Desktop editing sessions
+
+The work-order editor belongs to the selected ticket and daemon connection.
+Switching either closes the old draft. Saving compares fields with the snapshot
+from when editing opened, so background refreshes cannot turn untouched values
+into edits that overwrite another update. No-op saves send no PATCH; failed saves
+keep the draft, and an older save response cannot close a newly opened editor.
+The API still uses last-write behavior when two clients deliberately edit the
+same field; this is not a server-side optimistic-concurrency contract.
+
 ## Ticket lifecycle contract
 
 Closed and cancelled tickets are read-only terminal records. Tea still allows
