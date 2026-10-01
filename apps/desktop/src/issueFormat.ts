@@ -1,4 +1,5 @@
 import { t } from "./i18n";
+import { isTerminalTicket as isClosedTicket } from "./ticketLifecycle";
 import type { LocalNotes } from "./localMetadata";
 import type { IssueTouchSummary } from "./issueTypes";
 import {
@@ -79,8 +80,6 @@ export const createPriorityOptions: Array<{ value: string; label: string }> = [
   { value: "urgent", label: "Urgent" },
 ];
 
-const closedStatuses = new Set(["accepted", "cancelled", "canceled", "closed", "completed", "done"]);
-
 // System-derived labels the daemon owns and always preserves; operators cannot
 // set or remove these through a ticket edit, so the edit form hides them.
 const systemLabelPrefixes = ["source:", "policy:", "context:"];
@@ -155,7 +154,7 @@ export const exportTimestamp = () => {
   );
 };
 
-export const isClosedTicket = (ticket: TeaTicket) => closedStatuses.has(ticket.status.toLowerCase());
+export { isClosedTicket };
 
 export const issueStateLabel = (ticket: TeaTicket) => (isClosedTicket(ticket) ? "Closed" : "Open");
 

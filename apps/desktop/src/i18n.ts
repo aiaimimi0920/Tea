@@ -519,6 +519,10 @@ const zh: Record<string, string> = {
 
   // Signal reason strings (interpolated with {placeholders})
   "Terminal state: {status}": "终态：{status}",
+  "Completion review pending": "执行已完成，等待验收",
+  "Accepted; closure pending": "已验收，等待关闭",
+  "Review execution evidence before accepting or closing this work order.":
+    "请检查执行证据，再验收或关闭此工单。",
   "High priority: {value}": "高优先级：{value}",
   "High risk: {value}": "高风险：{value}",
   "Repeated runs: {count}": "重复执行：{count} 次",
