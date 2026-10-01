@@ -11,6 +11,7 @@ use thiserror::Error;
 
 mod helpers;
 mod memory;
+mod retry_authorization;
 mod sqlite;
 
 pub use memory::InMemoryTicketStore;

@@ -93,6 +93,15 @@ pub(crate) fn ensure_ticket_can_run(ticket: &Ticket) -> Result<(), StoreError> {
 }
 
 pub(crate) fn sync_ticket_status_from_run(ticket: &mut Ticket, status: RunStatus) {
+    // Stopping execution must not clear a newer rejection or missing-context gate.
+    if status == RunStatus::Stopped
+        && matches!(
+            ticket.status,
+            TicketStatus::Blocked | TicketStatus::NeedsInfo
+        )
+    {
+        return;
+    }
     ticket.status = match status {
         RunStatus::Queued | RunStatus::Running | RunStatus::Retrying => TicketStatus::Running,
         RunStatus::Succeeded => TicketStatus::Completed,

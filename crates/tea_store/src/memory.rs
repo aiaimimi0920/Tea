@@ -702,6 +702,15 @@ fn apply_memory_run_update(
         return Err(StoreError::RunConflict(run.id.clone()));
     }
     ensure_run_update(stored, &run)?;
+    if stored.status.can_retry() && run.status == tea_core::RunStatus::Retrying {
+        crate::retry_authorization::ensure_authorized(
+            inner
+                .tickets
+                .get(ticket_id)
+                .ok_or(StoreError::TicketNotFound)?,
+            inner.approvals.get(ticket_id).copied().unwrap_or(false),
+        )?;
+    }
     let previous_status = stored.status;
     let had_evidence = stored.evidence.is_some();
     inner.runs.insert(run.id.clone(), run.clone());

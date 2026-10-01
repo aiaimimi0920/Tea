@@ -2911,6 +2911,10 @@ async fn run_stop_rejects_a_stale_loom_response_after_concurrent_update() {
 #[tokio::test]
 async fn run_retry_endpoint_retries_the_addressed_run() {
     let (mut app, store, run) = router_with_run_status(tea_core::RunStatus::Stopped).await;
+    store
+        .grant_approval(&run.ticket_id, ActorRef::system())
+        .await
+        .unwrap();
 
     let response = app
         .call(
@@ -2954,11 +2958,12 @@ async fn run_retry_rejects_mismatched_loom_response_id() {
 
     let store = InMemoryTicketStore::default();
     let ticket = store
-        .create_ticket(
+        .create_ticket_with_policy(
             "Retry mismatch".to_string(),
             "Loom must not redirect run actions to another run.".to_string(),
             TicketSource::Human,
             ActorRef::human("vmjcv"),
+            ApprovalPolicy::AlwaysAuto,
         )
         .await
         .unwrap();

@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+mod run_authorization;
 mod settings_page;
 
 use settings_page::render_settings_page;
@@ -1144,27 +1145,13 @@ where
     let ticket_id = parse_ticket_id(&ticket_id)?;
     let _run_action = state.run_actions.try_lock(&ticket_id)?;
     let ticket = state.store.get_ticket(&ticket_id).await?;
-    ensure_ticket_can_run_for_api(&ticket)?;
-    let has_approval = state.store.has_approval(&ticket_id).await?;
-    match evaluate_run(&PolicyInput {
-        source: ticket.source,
-        risk_level: ticket.risk_level,
-        approval_policy: ticket.approval_policy,
-        has_approval,
-        has_evidence: false,
-        validation_passed: false,
-    }) {
-        PolicyDecision::Allow => {
-            let run = state.loom.start_run(&ticket).await?;
-            let run = state
-                .store
-                .add_run(&ticket_id, ActorRef::loom("tea-loom"), run)
-                .await?;
-            Ok(Json(run))
-        }
-        PolicyDecision::RequestApproval { reason } => Err(ApiError::forbidden(reason)),
-        PolicyDecision::Deny { reason } => Err(ApiError::forbidden(reason)),
-    }
+    run_authorization::ensure_authorized(&state.store, &ticket).await?;
+    let run = state.loom.start_run(&ticket).await?;
+    let run = state
+        .store
+        .add_run(&ticket_id, ActorRef::loom("tea-loom"), run)
+        .await?;
+    Ok(Json(run))
 }
 
 async fn stop_latest_run<S, A, L>(
@@ -1208,6 +1195,7 @@ where
     ensure_ticket_mutable_for_api(&ticket, "retry latest run for")?;
     let latest = require_latest_run(&state.store, &ticket_id).await?;
     ensure_run_can_retry_for_api(&latest)?;
+    run_authorization::ensure_authorized(&state.store, &ticket).await?;
     let retrying = state.loom.retry_run(&latest).await?;
     ensure_loom_run_action_response_matches(&latest, &retrying, RunStatus::Retrying)?;
     let updated = state
@@ -1265,6 +1253,7 @@ where
     let ticket = state.store.get_ticket(&run.ticket_id).await?;
     ensure_ticket_mutable_for_api(&ticket, "retry run for")?;
     ensure_run_can_retry_for_api(&run)?;
+    run_authorization::ensure_authorized(&state.store, &ticket).await?;
     let retrying = state.loom.retry_run(&run).await?;
     ensure_loom_run_action_response_matches(&run, &retrying, RunStatus::Retrying)?;
     let updated = state
