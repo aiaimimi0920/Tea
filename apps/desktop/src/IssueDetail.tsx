@@ -33,6 +33,7 @@ import {
 import { badgeToneForRisk, type IssueActionHint, type IssueSignal } from "./issueSignals";
 import type { IssueQueueNavigation, RepoSection, TicketEditDraft } from "./issueTypes";
 import { canRetryRun, canStopRun } from "./runLifecycle";
+import { isTicketActionDisabled } from "./ticketLifecycle";
 import {
   TeaAnalysis,
   TeaComment,
@@ -143,10 +144,7 @@ export const IssueDetail = memo(function IssueDetail({
 
   const latestRun = runs[runs.length - 1];
   const workflowActionDisabled = (action: Parameters<typeof ticketAction>[1]): boolean =>
-    busy ||
-    isClosedTicket(ticket) ||
-    (action === "stop" && !canStopRun(latestRun)) ||
-    (action === "retry" && !canRetryRun(latestRun));
+    isTicketActionDisabled(ticket, latestRun, action, busy);
 
   const handleSuggestedActionHint = () => {
     if (!selectedActionHint) return;
@@ -431,11 +429,11 @@ export const IssueDetail = memo(function IssueDetail({
                   </div>
                   {group.key === "approval" ? (
                     <>
-                      <RejectReasonForm busy={busy} onReject={onReject} />
+                      <RejectReasonForm busy={busy || isClosedTicket(ticket)} onReject={onReject} />
                       <div className="policy-editor">
                         <label htmlFor="policy-editor-select">{t("Approval policy")}</label>
                         <select
-                          disabled={busy}
+                          disabled={busy || isClosedTicket(ticket)}
                           id="policy-editor-select"
                           onChange={(event) => onApplyPolicy(event.target.value)}
                           value={ticket.approval_policy ?? ""}
@@ -642,6 +640,7 @@ function RejectReasonForm({
     >
       <label htmlFor="reject-reason-input">{t("Reject with reason")}</label>
       <textarea
+        disabled={busy}
         id="reject-reason-input"
         onChange={(event) => setReason(event.target.value)}
         placeholder={t("Explain why this approval is rejected.")}

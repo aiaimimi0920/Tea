@@ -454,7 +454,11 @@ keeping credentials out of the browser.
 Closed and cancelled tickets are read-only terminal records. Tea still allows
 read-only endpoints such as ticket show/list, comments, events, runs, and export
 after a ticket is closed, because those endpoints are needed for audit and
-review.
+review. Completed and accepted tickets remain in the desktop's Open / Needs
+review queue until explicitly closed. Their review comments and completion
+approval controls remain available; Accept is enabled for completed tickets,
+and Close for completed or accepted tickets. The daemon still enforces evidence
+and approval requirements before accepting these actions.
 
 Mutating endpoints reject terminal tickets with `409 Conflict`:
 

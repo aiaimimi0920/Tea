@@ -1,5 +1,6 @@
 import { t } from "./i18n";
 import { isClosedTicket } from "./issueFormat";
+import { canAcceptTicket, canCloseTicket } from "./ticketLifecycle";
 import type { IssueMetrics, RepoSection } from "./issueTypes";
 import { ticketAction, type TeaTicket } from "./teaClient";
 
@@ -94,6 +95,15 @@ export const issueSignalForTicket = (ticket: TeaTicket, metrics: IssueMetrics | 
     };
   }
 
+  if (canCloseTicket(ticket)) {
+    return {
+      description: t("Review execution evidence before accepting or closing this work order."),
+      label: "Needs review",
+      reason: canAcceptTicket(ticket) ? t("Completion review pending") : t("Accepted; closure pending"),
+      tone: "review",
+    };
+  }
+
   if (highPriority || highRisk || runCount >= 3) {
     const reason = highPriority
       ? t("High priority: {value}").replace("{value}", t(ticket.priority ?? "priority flag"))
@@ -156,6 +166,15 @@ export const issueActionHintForTicket = (
       label: "Export audit record",
       target: { format: "markdown", kind: "export", label: "Preview audit export" },
       tone: "audit",
+    };
+  }
+
+  if (canCloseTicket(ticket)) {
+    return {
+      description: t("Review execution evidence before accepting or closing this work order."),
+      label: "Inspect latest run",
+      target: { kind: "section", label: "Open runs tab", section: "runs" },
+      tone: "review",
     };
   }
 

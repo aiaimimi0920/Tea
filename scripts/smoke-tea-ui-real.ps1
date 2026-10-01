@@ -347,6 +347,7 @@ $uiSmokeSource = @'
 import { createRequire } from "node:module";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
+import { verifyCompletionReview } from "./tea-completion-review-smoke.mjs";
 
 const playwrightRoot = process.env.PLAYWRIGHT_PACKAGE_ROOT;
 if (!playwrightRoot) throw new Error("PLAYWRIGHT_PACKAGE_ROOT is required");
@@ -842,6 +843,12 @@ try {
     );
   }
 
+  markProgress("completion-review:start");
+  const completionReview = await verifyCompletionReview(
+    page, timeoutMs, path.join(screenshotRoot, "tea-completion-review.png"),
+  );
+  markProgress("completion-review:complete");
+
   await writeResult({
     status: "passed",
     native_tauri_runtime: nativeTauriRuntime,
@@ -857,6 +864,7 @@ try {
     duplicateCommentCount,
     detailRefreshFailure,
     responseLossRetry,
+    completionReview,
     pageUrl: page.url(),
     pageTitle: await page.title().catch(() => ""),
     pageStates,
@@ -883,6 +891,8 @@ try {
 
 Write-Utf8NoBom -Path $uiProxyScript -Content $uiProxySource
 Write-Utf8NoBom -Path $uiSmokeScript -Content $uiSmokeSource
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot "tea-completion-review-smoke.mjs") `
+    -Destination (Join-Path $artifactRoot "tea-completion-review-smoke.mjs")
 $nodeExe = (Get-Command node -ErrorAction Stop).Source
 
 try {
