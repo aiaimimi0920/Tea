@@ -348,6 +348,7 @@ import { createRequire } from "node:module";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { verifyCompletionReview } from "./tea-completion-review-smoke.mjs";
+import { verifyEditorSessions } from "./tea-editor-integrity-smoke.mjs";
 
 const playwrightRoot = process.env.PLAYWRIGHT_PACKAGE_ROOT;
 if (!playwrightRoot) throw new Error("PLAYWRIGHT_PACKAGE_ROOT is required");
@@ -854,6 +855,12 @@ try {
   );
   markProgress("accepted-approval:complete");
 
+  markProgress("editor-sessions:start");
+  const editorSessions = await verifyEditorSessions(
+    page, timeoutMs, path.join(screenshotRoot, "tea-editor-sessions.png"),
+  );
+  markProgress("editor-sessions:complete");
+
   await writeResult({
     status: "passed",
     native_tauri_runtime: nativeTauriRuntime,
@@ -871,6 +878,7 @@ try {
     responseLossRetry,
     completionReview,
     acceptedApprovalReview,
+    editorSessions,
     pageUrl: page.url(),
     pageTitle: await page.title().catch(() => ""),
     pageStates,
@@ -899,6 +907,8 @@ Write-Utf8NoBom -Path $uiProxyScript -Content $uiProxySource
 Write-Utf8NoBom -Path $uiSmokeScript -Content $uiSmokeSource
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "tea-completion-review-smoke.mjs") `
     -Destination (Join-Path $artifactRoot "tea-completion-review-smoke.mjs")
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot "tea-editor-integrity-smoke.mjs") `
+    -Destination (Join-Path $artifactRoot "tea-editor-integrity-smoke.mjs")
 $nodeExe = (Get-Command node -ErrorAction Stop).Source
 
 try {
