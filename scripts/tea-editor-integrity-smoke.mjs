@@ -20,6 +20,18 @@ export async function verifyEditorSessions(page, timeoutMs, screenshotPath) {
   const button = (name) => page.getByRole("button", { name, exact: true });
   const editor = page.locator("form.issue-edit-form");
   const field = (label) => editor.getByLabel(label, { exact: true });
+  const fieldValue = async (label, phase) => {
+    try { return await field(label).inputValue(); }
+    catch (error) {
+      const state = await page.evaluate(() => ({
+        title: document.querySelector(".issue-title-heading")?.textContent,
+        editors: document.querySelectorAll("form.issue-edit-form").length,
+        fields: [...document.querySelectorAll("form.issue-edit-form label")].map((node) => node.textContent?.trim()),
+        editButtons: [...document.querySelectorAll(".issue-detail-actions button")].map((node) => node.textContent?.trim()),
+      }));
+      throw new Error(`Editor fixture ${phase}: ${JSON.stringify(state)}; ${String(error).split("\n")[0]}`);
+    }
+  };
   await page.locator(".issue-filter-tabs > button").nth(0).click();
   await button("Refresh").click();
   await row(a.title).click({ timeout: timeoutMs });
@@ -28,7 +40,7 @@ export async function verifyEditorSessions(page, timeoutMs, screenshotPath) {
   await row(b.title).click();
   await editor.waitFor({ state: "hidden", timeout: timeoutMs });
   await button("Edit issue").click();
-  assert.equal(await field("Title").inputValue(), b.title);
+  assert.equal(await fieldValue("Title", "open-B-after-switch"), b.title);
   await field("Title").fill("Tea editor intentional B title");
   await button("Save changes").click();
   await editor.waitFor({ state: "hidden", timeout: timeoutMs });
@@ -65,7 +77,7 @@ export async function verifyEditorSessions(page, timeoutMs, screenshotPath) {
   assert.equal((await request("GET", `${ticketPath(a.id)}/events`)).length, before);
   assert.equal((await request("GET", ticketPath(a.id))).description, "Newest external description");
   await button("Edit issue").click();
-  assert.equal(await field("Description").inputValue(), "Newest external description");
+  assert.equal(await fieldValue("Description", "reopen-A-after-noop"), "Newest external description");
   await button("Cancel").click();
   await page.screenshot({ path: screenshotPath });
   return { ticketIds: tickets.map((ticket) => ticket.id), untouchedFieldsPreserved: true, screenshotPath };
