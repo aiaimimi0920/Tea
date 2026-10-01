@@ -1203,11 +1203,12 @@ async fn initial_run_status_controls_sqlite_ticket_state_and_events() {
 
 async fn assert_run_transition_guards_and_audit_events(store: &impl TicketStore) {
     let ticket = store
-        .create_ticket(
+        .create_ticket_with_policy(
             "Run lifecycle".to_string(),
             "Preserve terminal outcomes and audit operator run actions.".to_string(),
             TicketSource::Human,
             ActorRef::human("vmjcv"),
+            ApprovalPolicy::AlwaysAuto,
         )
         .await
         .unwrap();
@@ -2482,11 +2483,12 @@ where
     S: TicketStore,
 {
     let created = store
-        .create_ticket(
+        .create_ticket_with_policy(
             "Historical run update".to_string(),
             "Keep the latest run authoritative for the ticket status.".to_string(),
             TicketSource::Human,
             ActorRef::human("vmjcv"),
+            ApprovalPolicy::AlwaysAuto,
         )
         .await
         .unwrap();

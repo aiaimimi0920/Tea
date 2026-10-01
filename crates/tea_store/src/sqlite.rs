@@ -1400,6 +1400,18 @@ pub(crate) fn apply_sqlite_run_update(
         return Err(StoreError::RunConflict(run.id.clone()));
     }
     ensure_run_update(&previous, run)?;
+    if previous.status.can_retry() && run.status == tea_core::RunStatus::Retrying {
+        let approved = conn
+            .query_row(
+                "SELECT approved FROM approvals WHERE ticket_id = ?1",
+                params![ticket_id.to_string()],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            .unwrap_or(0)
+            == 1;
+        crate::retry_authorization::ensure_authorized(&ticket, approved)?;
+    }
     conn.execute(
         "UPDATE runs SET json = ?1 WHERE id = ?2",
         params![encode(run)?, run.id.to_string()],

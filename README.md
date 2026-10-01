@@ -507,6 +507,11 @@ Run actions have a separate state guard:
 - stop is valid only from `queued`, `running`, or `retrying`, and must return
   `stopped`;
 - retry is valid only from `failed` or `stopped`, and must return `retrying`;
+  retries re-evaluate the current ticket status, risk and approval policy before
+  dispatch, so an earlier run does not bypass a later rejection, missing context,
+  or tightened approval requirement. Stop remains available for active runs even
+  when execution permission has since been restricted, and preserves blocked or
+  missing-context states rather than clearing those restrictions;
 - `succeeded` is a terminal run outcome: its status, Loom session, and evidence
   snapshot are immutable and cannot be overwritten by later updates, stop, or
   retry;
@@ -527,6 +532,10 @@ different tickets remain independent. Store compare-and-set remains the durable
 last line of defense against external run updates. This process-local gate does
 not claim cross-daemon or crash-recovery idempotency; that requires a future Loom
 operation-key/reservation protocol.
+A retry response is also checked against current authorization under the store's
+mutex/write transaction before it can change a failed or stopped run to retrying.
+This preserves a newer rejection or policy change in Tea, but cannot undo an
+external Loom call already issued before that decision changed.
 
 After Loom returns, Tea also compare-and-sets the complete Run snapshot read
 before the remote call. A response is rejected with `409 Conflict` if another
