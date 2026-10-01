@@ -19,7 +19,11 @@ export async function verifyEditorSessions(page, timeoutMs, screenshotPath) {
   const row = (title) => page.locator(".issue-item").filter({ hasText: title });
   const button = (name) => page.getByRole("button", { name, exact: true });
   const editor = page.locator("form.issue-edit-form");
-  const field = (label) => editor.getByLabel(label, { exact: true });
+  // React serializes a textarea's initial value inside the wrapping label;
+  // exact label text then includes that value. Its unique placeholder is stable.
+  const field = (label) => label === "Description"
+    ? editor.getByPlaceholder("Work order description", { exact: true })
+    : editor.getByLabel(label, { exact: true });
   const fieldValue = async (label, phase) => {
     try { return await field(label).inputValue(); }
     catch (error) {
