@@ -683,7 +683,7 @@ impl TicketStore for SqliteTicketStore {
             let conn = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let mut ticket = get_sqlite_ticket(&conn, &ticket_id)?;
             ensure_ticket_mutable_for(&ticket, "approve")?;
-            if ticket.status != TicketStatus::Completed {
+            if !matches!(ticket.status, TicketStatus::Completed | TicketStatus::Accepted) {
                 ticket.status = TicketStatus::Approved;
             }
             ticket.touch();
