@@ -494,7 +494,9 @@ transaction. A concurrent approval change therefore cannot bypass a
 The ticket must currently be `completed` or `accepted`; evidence from an older
 successful run cannot close a ticket whose latest execution left it `failed` or
 `needs_review`. Granting a completion approval records the approval without
-regressing an already-completed ticket to the pre-execution `approved` state.
+regressing an already-completed or accepted ticket to the pre-execution
+`approved` state. An accepted ticket can therefore receive completion approval
+and then close without repeating its execution or human acceptance.
 
 Rejected approval keeps a ticket in `Blocked`; blocked tickets reject new run
 attempts before Tea calls Loom, even if the ticket policy would otherwise allow

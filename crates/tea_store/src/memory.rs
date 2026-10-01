@@ -372,7 +372,10 @@ impl TicketStore for InMemoryTicketStore {
         let mut inner = self.inner.lock().map_err(|_| StoreError::LockPoisoned)?;
         let ticket = ticket_mut(&mut inner, ticket_id)?;
         ensure_ticket_mutable_for(ticket, "approve")?;
-        if ticket.status != TicketStatus::Completed {
+        if !matches!(
+            ticket.status,
+            TicketStatus::Completed | TicketStatus::Accepted
+        ) {
             ticket.status = TicketStatus::Approved;
         }
         ticket.touch();

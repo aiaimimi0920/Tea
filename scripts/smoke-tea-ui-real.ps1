@@ -848,6 +848,11 @@ try {
     page, timeoutMs, path.join(screenshotRoot, "tea-completion-review.png"),
   );
   markProgress("completion-review:complete");
+  markProgress("accepted-approval:start");
+  const acceptedApprovalReview = await verifyCompletionReview(
+    page, timeoutMs, path.join(screenshotRoot, "tea-accepted-approval.png"), false,
+  );
+  markProgress("accepted-approval:complete");
 
   await writeResult({
     status: "passed",
@@ -865,6 +870,7 @@ try {
     detailRefreshFailure,
     responseLossRetry,
     completionReview,
+    acceptedApprovalReview,
     pageUrl: page.url(),
     pageTitle: await page.title().catch(() => ""),
     pageStates,

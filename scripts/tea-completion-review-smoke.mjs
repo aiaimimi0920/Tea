@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 
 // Run only inside the existing smoke harness's isolated daemon/profile. Never
 // dispatch against a configured external executor or the user's real work.
-export async function verifyCompletionReview(page, timeoutMs, screenshotPath) {
+export async function verifyCompletionReview(page, timeoutMs, screenshotPath, approveBeforeAccept = true) {
   const request = (method, path, body = null) => page.evaluate(
     (args) => window.__TAURI_INTERNALS__.invoke("tea_request", args),
     { method, path, body, baseUrl: null, authToken: null, timeoutMs: 15000 },
@@ -20,7 +20,7 @@ export async function verifyCompletionReview(page, timeoutMs, screenshotPath) {
 
   const localeToggle = page.getByTestId("locale-toggle");
   if ((await localeToggle.textContent())?.trim() === "EN") await localeToggle.click();
-  const title = "Tea completion review lifecycle smoke";
+  const title = `Tea completion review smoke (${approveBeforeAccept ? "approval-first" : "acceptance-first"})`;
   const ticket = await request("POST", "/v1/tickets", {
     title,
     description: "Synthetic local completion evidence for the desktop lifecycle contract.",
@@ -58,12 +58,19 @@ export async function verifyCompletionReview(page, timeoutMs, screenshotPath) {
 
   const action = (name) => page.locator(".workflow-actions")
     .getByRole("button", { name, exact: true });
-  await action("Approve").click();
-  await until(async () => (await request("GET", `${ticketPath}/events`))
-    .some((event) => event.kind === "approval_granted"), "Completion approval was not persisted");
-  await waitStatus("completed");
+  const approve = async () => {
+    await action("Approve").click();
+    await until(async () => (await request("GET", `${ticketPath}/events`))
+      .some((event) => event.kind === "approval_granted"), "Completion approval was not persisted");
+    await waitStatus(approveBeforeAccept ? "completed" : "accepted");
+  };
+  if (approveBeforeAccept) await approve();
   await action("Accept").click();
   await waitStatus("accepted");
+  if (!approveBeforeAccept) {
+    await assert.rejects(request("POST", `${ticketPath}/close`, {}), /approval/i);
+    await approve();
+  }
   assert.equal(await action("Accept").isDisabled(), true);
   assert.equal(await comments.locator("textarea").isEnabled(), true);
   assert.equal(await row.count(), 1, "accepted work must remain in the open queue");
@@ -82,5 +89,5 @@ export async function verifyCompletionReview(page, timeoutMs, screenshotPath) {
   for (const label of ["Accept", "Approve", "Close", "Run"]) {
     assert.equal(await action(label).isDisabled(), true, `${label} must remain disabled after closure`);
   }
-  return { ticketId: ticket.id, finalStatus: "closed", commentCount: 1, screenshotPath };
+  return { ticketId: ticket.id, finalStatus: "closed", approveBeforeAccept, commentCount: 1, screenshotPath };
 }
