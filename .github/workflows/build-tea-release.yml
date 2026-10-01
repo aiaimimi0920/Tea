@@ -1,6 +1,9 @@
 name: Build Tea Release
 
 on:
+  pull_request:
+    branches:
+      - main
   push:
     branches:
       - main
@@ -128,6 +131,8 @@ jobs:
           powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-tea-release-asset-reparse-contract.ps1 -PackageDir "release\Tea\ci-${{ github.run_number }}-${{ github.sha }}"
 
       - name: Upload portable Tea release package
+        # PRs validate the same package gates without publishing a release artifact.
+        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: tea-portable-windows-x64
