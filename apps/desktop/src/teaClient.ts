@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { invalidateTicketBundles, shareTicketBundleRequest } from "./inFlightTicketBundles";
 
 export type JsonObject = Record<string, unknown>;
 
@@ -117,7 +118,8 @@ export interface TeaClientOptions {
 const PAGED_COLLECTION_LIMIT = 200;
 const MAX_PAGED_COLLECTION_PAGES = 1_000;
 const POLL_TIMEOUT_MS = 15_000;
-const inFlightTicketBundleRequests = new Map<string, Promise<TeaTicketBundle>>();
+const connectionKey = (options?: TeaClientOptions): string =>
+  JSON.stringify([options?.serverUrl ?? null, options?.authToken ?? null]);
 
 type DecodedCollectionPage<T> =
   | { kind: "legacy"; items: T[] }
@@ -138,15 +140,22 @@ async function requestJson<T>(
   options?: TeaClientOptions,
   extras?: { idempotencyKey?: string; timeoutMs?: number },
 ): Promise<T> {
-  return invoke<T>("tea_request", {
-    method,
-    path,
-    body: body ?? null,
-    baseUrl: options?.serverUrl ?? null,
-    authToken: options?.authToken ?? null,
-    ...(extras?.idempotencyKey ? { idempotencyKey: extras.idempotencyKey } : {}),
-    ...(extras?.timeoutMs !== undefined ? { timeoutMs: extras.timeoutMs } : {}),
-  });
+  const connection = connectionKey(options);
+  try {
+    return await invoke<T>("tea_request", {
+      method,
+      path,
+      body: body ?? null,
+      baseUrl: options?.serverUrl ?? null,
+      authToken: options?.authToken ?? null,
+      ...(extras?.idempotencyKey ? { idempotencyKey: extras.idempotencyKey } : {}),
+      ...(extras?.timeoutMs !== undefined ? { timeoutMs: extras.timeoutMs } : {}),
+    });
+  } finally {
+    // A lost mutation response may still have committed. Never let a later
+    // refresh share a read that began before that mutation settled.
+    if (method !== "GET") invalidateTicketBundles(connection);
+  }
 }
 
 function decodeCollectionPage<T>(value: unknown, legacyEnvelope?: string): DecodedCollectionPage<T> {
@@ -522,26 +531,13 @@ export async function getTicketBundle(
   id: string,
   options?: TeaClientOptions,
 ): Promise<TeaTicketBundle> {
-  // Selection changes and snapshot refreshes can ask for the same detail at
-  // the same time. Share only the in-flight request; completed responses are
-  // never cached, so every later refresh still observes current daemon state.
-  const requestKey = JSON.stringify([options?.serverUrl ?? null, options?.authToken ?? null, id]);
-  const existing = inFlightTicketBundleRequests.get(requestKey);
-  if (existing) return existing;
-
-  const request = requestJson<TeaTicketBundle>(
-    "GET",
-    `/v1/tickets/${encodeURIComponent(id)}/bundle`,
-    undefined,
-    options,
-    { timeoutMs: POLL_TIMEOUT_MS },
+  return shareTicketBundleRequest(connectionKey(options), id, () =>
+    requestJson<TeaTicketBundle>(
+      "GET",
+      `/v1/tickets/${encodeURIComponent(id)}/bundle`,
+      undefined,
+      options,
+      { timeoutMs: POLL_TIMEOUT_MS },
+    ),
   );
-  inFlightTicketBundleRequests.set(requestKey, request);
-  try {
-    return await request;
-  } finally {
-    if (inFlightTicketBundleRequests.get(requestKey) === request) {
-      inFlightTicketBundleRequests.delete(requestKey);
-    }
-  }
 }

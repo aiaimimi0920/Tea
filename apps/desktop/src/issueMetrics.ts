@@ -20,6 +20,8 @@ export function mergeIssueMetricCounts<T extends MetricCounts>(
   comments: number,
   runs: number,
 ): Record<string, T> {
+  // Detail polling must not invalidate issue-list memos when only identities changed.
+  if (current[id]?.comments === comments && current[id]?.runs === runs) return current;
   return {
     ...current,
     [id]: {

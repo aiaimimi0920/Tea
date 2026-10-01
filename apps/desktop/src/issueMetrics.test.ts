@@ -9,6 +9,15 @@ type TestMetric = {
 };
 
 describe("mergeIssueMetricCounts", () => {
+  it("preserves the map and metadata when detail polling repeats the same counts", () => {
+    const current = {
+      first: { comments: 1, runs: 2, latestTouch: { label: "Reviewed" } },
+    };
+    expect(mergeIssueMetricCounts(current, "first", 1, 2)).toBe(current);
+    expect(mergeIssueMetricCounts(current, "first", 1, 3)).not.toBe(current);
+    expect(mergeIssueMetricCounts(current, "first", 2, 2)).not.toBe(current);
+  });
+
   it("updates counts without dropping existing metadata or sibling entries", () => {
     const current: Record<string, TestMetric> = {
       first: {
