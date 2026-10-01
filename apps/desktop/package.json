@@ -30,6 +30,6 @@
     "playwright-core": "1.59.1",
     "typescript": "^5.0.0",
     "typescript-eslint": "^8.65.0",
-    "vitest": "4.1.10"
+    "vitest": "4.1.11"
   }
 }

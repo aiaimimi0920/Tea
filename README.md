@@ -883,6 +883,11 @@ Smoke artifacts are written to `.tmp/tea-smoke/tea-configuration-ownership-*`.
 
 Run Tea-local validation from the Tea repository root:
 
+Pull requests targeting `main` run the same read-only build, dependency audit,
+test, and Windows package verification gates as main-branch builds. PR runs do
+not upload release artifacts; publishing GitHub releases remains restricted to
+the separate tag/manual release workflow.
+
 The release workflows pin third-party GitHub Actions to immutable commit SHAs;
 the adjacent comments retain the audited major-version/toolchain intent.
 Manual releases pass the requested tag through an environment variable, validate
