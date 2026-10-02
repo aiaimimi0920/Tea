@@ -156,3 +156,10 @@ it("keeps an in-flight save bound to its original daemon across navigation", asy
   await click(toggle());
   expect(button("Save Tea settings").disabled).toBe(false);
 });
+
+it("exposes the localized settings tab before switching the empty workspace to English", async () => {
+  await act(async () => { setLocale("zh"); });
+  expect(button("设置", container.querySelector(".repo-tabs")!).getAttribute("role")).toBe("tab");
+  await click(container.querySelector<HTMLButtonElement>('[data-testid="locale-toggle"]')!);
+  await click(button("Settings")); expect(toggle()).not.toBeNull(); expect(writes).toEqual([]);
+});

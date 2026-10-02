@@ -11,6 +11,10 @@ export async function verifyEmptySettings(page, timeoutMs, screenshotPath) {
   assert.equal((Array.isArray(tickets) ? tickets : tickets.items).length, 0);
   const original = await request("GET", "/v1/configuration");
   assert.equal(original.configuration_source, "local");
+  // The fresh profile defaults to Chinese; reuse the public language control.
+  const localeToggle = page.getByTestId("locale-toggle");
+  const restoreChinese = (await localeToggle.textContent())?.trim() === "EN";
+  if (restoreChinese) await localeToggle.click();
   const tabs = page.locator(".repo-tabs");
   const settings = () => tabs.getByRole("tab", { name: "Settings", exact: true }).click();
   const issues = () => tabs.getByRole("tab", { name: /^Issues/ }).click();
@@ -49,6 +53,7 @@ export async function verifyEmptySettings(page, timeoutMs, screenshotPath) {
     assert.equal(await notifications.isChecked(), original.config.notifications_enabled);
     phase = "return to issues with first work order";
     await issues();
+    if (restoreChinese) await localeToggle.click();
     return { ticketId: ticket.id, emptyWorkspaceVerified: true, screenshotPath };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
