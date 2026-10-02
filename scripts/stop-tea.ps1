@@ -184,7 +184,10 @@ function Stop-OwnedProcess {
     # Pin this process identity before checking ownership or terminating it.
     # A later PID lookup can observe stale metadata or a reused process ID.
     # If this identity has vanished or cannot be opened, fail before any kill.
-    [void]$Process.Handle
+    $processHandle = $Process.Handle
+    if ($null -eq $processHandle -or $processHandle -eq [IntPtr]::Zero) {
+        throw "Cannot retain the Tea process identity before stopping it."
+    }
     $processPath = try { $Process.Path } catch { $null }
     if (-not (Test-SamePath -Left $processPath -Right $ExpectedPath)) { return $false }
     $processId = $Process.Id
@@ -208,7 +211,10 @@ function Stop-OwnedDaemon {
     # Pin this process identity before checking ownership or terminating it.
     # A later PID lookup can observe stale metadata or a reused process ID.
     # If this identity has vanished or cannot be opened, fail before any kill.
-    [void]$Process.Handle
+    $processHandle = $Process.Handle
+    if ($null -eq $processHandle -or $processHandle -eq [IntPtr]::Zero) {
+        throw "Cannot retain the Tea process identity before stopping it."
+    }
     $processPath = try { $Process.Path } catch { $null }
     $commandLine = Get-ProcessCommandLine -ProcessId $Process.Id
     if (-not (Test-SamePath -Left $processPath -Right $ExpectedPath) -or
