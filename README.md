@@ -86,7 +86,11 @@ It contains `tea.exe`, `tea-daemon.exe`, `tea-cli.exe`, `tea-mcp.exe`,
   process executable and its unique `--bind-addr`, `--store-path`, and
   `--config-path` arguments match the requested Tea profile. The stop launcher
   likewise refuses to terminate a same-executable daemon whose profile arguments
-  differ, and a healthy authenticated endpoint is not reused unless that same
+  differ. Once ownership is verified, stopping and the bounded five-second wait
+  use the same retained process handle; a fresh PID lookup cannot mistake stale
+  process metadata for a still-running daemon or target a reused PID. Kill/wait
+  failures propagate rather than being swallowed. A healthy authenticated
+  endpoint is not reused unless that same
   ownership check succeeds. Generated token files contain exactly 32 ASCII hex
   characters; malformed files are rejected without replacement, and the token
   file or its direct parent directory must not be a symlink/reparse point. Direct

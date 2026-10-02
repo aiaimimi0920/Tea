@@ -181,12 +181,18 @@ function Stop-OwnedProcess {
         [string]$Label
     )
 
+    # Pin this process identity before checking ownership or terminating it.
+    # A later PID lookup can observe stale metadata or a reused process ID.
+    # If this identity has vanished or cannot be opened, fail before any kill.
+    $processHandle = $Process.Handle
+    if ($null -eq $processHandle -or $processHandle -eq [IntPtr]::Zero) {
+        throw "Cannot retain the Tea process identity before stopping it."
+    }
     $processPath = try { $Process.Path } catch { $null }
     if (-not (Test-SamePath -Left $processPath -Right $ExpectedPath)) { return $false }
     $processId = $Process.Id
-    Stop-Process -Id $Process.Id -Force -ErrorAction Stop
-    try { [void]$Process.WaitForExit(5000) } catch {}
-    if ($null -ne (Get-Process -Id $processId -ErrorAction SilentlyContinue)) {
+    $Process.Kill()
+    if (-not $Process.WaitForExit(5000)) {
         throw "failed to stop $Label within 5 seconds: pid=$processId"
     }
     Write-Host "stopped $Label pid=$processId"
@@ -202,6 +208,13 @@ function Stop-OwnedDaemon {
         [string]$ConfigPath
     )
 
+    # Pin this process identity before checking ownership or terminating it.
+    # A later PID lookup can observe stale metadata or a reused process ID.
+    # If this identity has vanished or cannot be opened, fail before any kill.
+    $processHandle = $Process.Handle
+    if ($null -eq $processHandle -or $processHandle -eq [IntPtr]::Zero) {
+        throw "Cannot retain the Tea process identity before stopping it."
+    }
     $processPath = try { $Process.Path } catch { $null }
     $commandLine = Get-ProcessCommandLine -ProcessId $Process.Id
     if (-not (Test-SamePath -Left $processPath -Right $ExpectedPath) -or
@@ -214,9 +227,8 @@ function Stop-OwnedDaemon {
         return $false
     }
     $processId = $Process.Id
-    Stop-Process -Id $Process.Id -Force -ErrorAction Stop
-    try { [void]$Process.WaitForExit(5000) } catch {}
-    if ($null -ne (Get-Process -Id $processId -ErrorAction SilentlyContinue)) {
+    $Process.Kill()
+    if (-not $Process.WaitForExit(5000)) {
         throw "failed to stop tea-daemon within 5 seconds: pid=$processId"
     }
     Write-Host "stopped tea-daemon pid=$processId"
