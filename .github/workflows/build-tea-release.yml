@@ -107,6 +107,8 @@ jobs:
         run: |
           cargo build --locked -p tea-daemon
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-tea-stop-process-contract.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-tea-launcher-contract.ps1 -DaemonExe .\target\debug\tea-daemon.exe
 
       - name: Release reparse-point containment contract
