@@ -16,31 +16,42 @@ export async function verifyEmptySettings(page, timeoutMs, screenshotPath) {
   const issues = () => tabs.getByRole("tab", { name: /^Issues/ }).click();
   const form = page.locator("form.settings-config-editor");
   const notifications = form.getByRole("checkbox", { name: "Enable notifications", exact: true });
-  await settings();
-  await form.waitFor({ state: "visible", timeout: timeoutMs });
-  assert.equal(await notifications.isChecked(), original.config.notifications_enabled);
-  assert.equal(await form.getByRole("button", { name: "Save Tea settings", exact: true }).isDisabled(), true);
-  await notifications.setChecked(!original.config.notifications_enabled);
-  await issues();
-  await form.waitFor({ state: "hidden", timeout: timeoutMs });
-  await settings();
-  assert.equal(await notifications.isChecked(), original.config.notifications_enabled);
-  await notifications.setChecked(!original.config.notifications_enabled);
-  await form.getByRole("button", { name: "Reset changes", exact: true }).click();
-  assert.equal(await notifications.isChecked(), original.config.notifications_enabled);
-  assert.deepEqual(await request("GET", "/v1/configuration"), original);
-  await page.screenshot({ path: screenshotPath });
+  let phase = "open empty settings";
+  try {
+    await settings();
+    await form.waitFor({ state: "visible", timeout: timeoutMs });
+    assert.equal(await notifications.isChecked(), original.config.notifications_enabled);
+    assert.equal(await form.getByRole("button", { name: "Save Tea settings", exact: true }).isDisabled(), true);
+    await notifications.setChecked(!original.config.notifications_enabled);
+    phase = "leave settings with unsaved draft";
+    await issues();
+    await form.waitFor({ state: "hidden", timeout: timeoutMs });
+    phase = "return to settings";
+    await settings();
+    assert.equal(await notifications.isChecked(), original.config.notifications_enabled);
+    await notifications.setChecked(!original.config.notifications_enabled);
+    phase = "reset unsaved changes";
+    await form.getByRole("button", { name: "Reset changes", exact: true }).click();
+    assert.equal(await notifications.isChecked(), original.config.notifications_enabled);
+    assert.deepEqual(await request("GET", "/v1/configuration"), original);
+    await page.screenshot({ path: screenshotPath });
 
-  // Seed the same records used by the existing lifecycle/accessibility assertions.
-  const ticket = await request("POST", "/v1/tickets", {
-    title: "Tea UI smoke", description: "Created after verifying empty-workspace settings in tea.exe.",
-  });
-  await request("POST", `/v1/tickets/${encodeURIComponent(ticket.id)}/comments`, {
-    body: "Tea UI smoke comment for timeline coverage.",
-  });
-  await page.locator(".refresh-control").getByRole("button", { name: "Refresh", exact: true }).click();
-  await page.locator(".issue-item").filter({ hasText: ticket.title }).waitFor({ state: "visible", timeout: timeoutMs });
-  assert.equal(await notifications.isChecked(), original.config.notifications_enabled);
-  await issues();
-  return { ticketId: ticket.id, emptyWorkspaceVerified: true, screenshotPath };
+    // Seed the same records used by the existing lifecycle/accessibility assertions.
+    const ticket = await request("POST", "/v1/tickets", {
+      title: "Tea UI smoke", description: "Created after verifying empty-workspace settings in tea.exe.",
+    });
+    await request("POST", `/v1/tickets/${encodeURIComponent(ticket.id)}/comments`, {
+      body: "Tea UI smoke comment for timeline coverage.",
+    });
+    phase = "refresh first work order";
+    await page.locator(".refresh-control").getByRole("button", { name: "Refresh", exact: true }).click();
+    await page.locator(".issue-item").filter({ hasText: ticket.title }).waitFor({ state: "visible", timeout: timeoutMs });
+    assert.equal(await notifications.isChecked(), original.config.notifications_enabled);
+    phase = "return to issues with first work order";
+    await issues();
+    return { ticketId: ticket.id, emptyWorkspaceVerified: true, screenshotPath };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Empty settings smoke failed during ${phase}: ${message.replace(/\s+/g, " ")}`);
+  }
 }
