@@ -121,7 +121,9 @@ def run(args):
             report = json.loads(raw)
         count = classify(args.kind, process.returncode, stdout, stderr, report)
         result.update(status="findings" if count else "clean", findings=count)
-        exit_code = 1 if count and os.environ.get("QUALITY_STRICT") == "true" else 0
+        # Preserve the original ESLint default: warnings alone do not fail strict CI.
+        strict_failure = process.returncode != 0 if args.kind == "eslint" else bool(count)
+        exit_code = 1 if strict_failure and os.environ.get("QUALITY_STRICT") == "true" else 0
     except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError) as error:
         if isinstance(error, subprocess.TimeoutExpired):
             (output / "stdout.log").write_bytes(error.stdout or b"")
