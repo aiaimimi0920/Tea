@@ -44,6 +44,9 @@ jobs:
           if-no-files-found: error
 
   build-windows-release:
+    env:
+      # Ordinary PR findings are advisory; candidate/release builds stay strict.
+      QUALITY_STRICT: ${{ github.event_name != 'pull_request' }}
     needs: test-linux-startup-lock
     runs-on: windows-latest
 
@@ -82,7 +85,7 @@ jobs:
 
       - name: Desktop ESLint (react-hooks)
         working-directory: apps/desktop
-        run: npm run lint
+        run: python ../../scripts/development_quality.py eslint --output ../../artifacts/quality/eslint -- node node_modules/eslint/bin/eslint.js src --format json
 
       - name: Desktop unit tests
         working-directory: apps/desktop
@@ -101,16 +104,16 @@ jobs:
           if-no-files-found: error
 
       - name: Rust format check
-        run: cargo fmt --check --all
+        run: python scripts/development_quality.py rustfmt --output artifacts/quality/format-1 -- cargo fmt --check --all
 
       - name: Desktop Tauri Rust format check
-        run: cargo fmt --check --manifest-path apps/desktop/src-tauri/Cargo.toml
+        run: python scripts/development_quality.py rustfmt --output artifacts/quality/format-2 -- cargo fmt --check --manifest-path apps/desktop/src-tauri/Cargo.toml
 
       - name: Rust Clippy
-        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+        run: python scripts/development_quality.py clippy --output artifacts/quality/clippy-1 -- cargo clippy --locked --workspace --all-targets --message-format=json -- --cap-lints warn
 
       - name: Desktop Tauri Rust Clippy
-        run: cargo clippy --locked --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- -D warnings
+        run: python scripts/development_quality.py clippy --output artifacts/quality/clippy-2 -- cargo clippy --locked --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets --message-format=json -- --cap-lints warn
 
       - name: Rust tests
         run: cargo test --locked --workspace
@@ -155,4 +158,12 @@ jobs:
         with:
           name: tea-portable-windows-x64
           path: release/Tea/ci-${{ github.run_number }}-${{ github.sha }}
+          if-no-files-found: error
+
+      - name: Retain tea-windows quality evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: quality-tea-windows-${{ github.run_id }}
+          path: artifacts/quality
           if-no-files-found: error
