@@ -116,6 +116,13 @@ verifies the copied `tea.exe` UI program, `tea-daemon.exe` no-UI daemon,
 
 ## Configuration ownership
 
+Settings is available before the first work order exists. Opening Settings,
+switching tabs, or resetting an unsaved draft does not write daemon configuration.
+The settings panel remains available as work orders are created, and Loom-managed
+configuration retains its existing read-only/jump-to-Loom behavior. Unsaved settings
+drafts are discarded when switching daemon connections; stale save callbacks cannot
+write to a different connection, including a later visit to the same endpoint.
+
 Tea is an independent program, so it must be able to configure Tea-specific
 options through its own local settings surface or equivalent CLI/API entry when
 Loom is not available. This includes settings such as hotkeys, ticket intake
