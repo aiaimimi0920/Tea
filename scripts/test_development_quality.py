@@ -25,6 +25,14 @@ class ClassificationTests(unittest.TestCase):
         with self.assertRaises((ValueError, TypeError, KeyError)):
             self.classify(*args)
 
+    def test_candidate_quality_reports_do_not_dirty_source_tree(self):
+        workflow = (SCRIPT.parent.parent / ".github/workflows/build-tea-release.yml").read_text(encoding="utf-8")
+        self.assertIn("QUALITY_REPORT_DIR: $" + "{{ runner.temp }}/tea-quality", workflow)
+        self.assertEqual(workflow.count('--output "$env:QUALITY_REPORT_DIR/'), 5)
+        self.assertIn("path: $" + "{{ runner.temp }}/tea-quality", workflow)
+        self.assertNotIn("artifacts/quality", workflow)
+        self.assertNotIn("-AllowDirtyManifest", workflow)
+
     def test_rustfmt_clean_and_diff(self):
         self.assertEqual(self.classify("rustfmt", 0), 0)
         self.assertEqual(self.classify("rustfmt", 1, "Diff in C:/x.rs:1:\n-old\n+new\n"), 1)
