@@ -32,8 +32,16 @@ jobs:
       - name: Audit Rust dependency locks
         run: |
           cargo install cargo-audit --locked --version 0.22.2
-          cargo audit
-          cargo audit --file apps/desktop/src-tauri/Cargo.lock
+          python3 scripts/run_dependency_audit.py cargo --output .tmp/audit-root -- cargo audit --json
+          python3 scripts/run_dependency_audit.py cargo --output .tmp/audit-desktop -- cargo audit --file apps/desktop/src-tauri/Cargo.lock --json
+      - name: Retain Rust audit reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rust-audits
+          path: .tmp/audit-*
+          include-hidden-files: true
+          if-no-files-found: error
 
   build-windows-release:
     needs: test-linux-startup-lock
@@ -82,7 +90,15 @@ jobs:
 
       - name: Desktop dependency audit
         working-directory: apps/desktop
-        run: npm audit --audit-level=high
+        run: python ../../scripts/run_dependency_audit.py npm --output ../../.tmp/audit-npm -- npm audit --audit-level=high --json
+      - name: Retain desktop audit report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: desktop-audit
+          path: .tmp/audit-npm
+          include-hidden-files: true
+          if-no-files-found: error
 
       - name: Rust format check
         run: cargo fmt --check --all
