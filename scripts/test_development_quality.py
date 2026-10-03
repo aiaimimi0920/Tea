@@ -27,8 +27,7 @@ class ClassificationTests(unittest.TestCase):
 
     def test_candidate_quality_reports_do_not_dirty_source_tree(self):
         workflow = (SCRIPT.parent.parent / ".github/workflows/build-tea-release.yml").read_text(encoding="utf-8")
-        self.assertIn("QUALITY_REPORT_DIR: $" + "{{ runner.temp }}/tea-quality", workflow)
-        self.assertEqual(workflow.count('--output "$env:QUALITY_REPORT_DIR/'), 5)
+        self.assertEqual(workflow.count('--output "$env:RUNNER_TEMP/tea-quality/'), 5)
         self.assertIn("path: $" + "{{ runner.temp }}/tea-quality", workflow)
         self.assertNotIn("artifacts/quality", workflow)
         self.assertNotIn("-AllowDirtyManifest", workflow)
