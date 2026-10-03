@@ -76,23 +76,22 @@ jobs:
           timeout --signal=TERM --kill-after=10s 60s docker run "${common[@]}" \
             --entrypoint=/osv-scanner "$image" --version > "$evidence/version.log" 2>&1
           grep -Fx 'osv-scanner version: 2.5.1' "$evidence/version.log"
+          lock_args=(
+            --lockfile=/github/workspace/Cargo.lock
+            --lockfile=/github/workspace/apps/desktop/src-tauri/Cargo.lock
+            --lockfile=/github/workspace/apps/desktop/package-lock.json)
           set +e
           timeout --signal=TERM --kill-after=30s 600s docker run "${common[@]}" \
             --entrypoint=/osv-scanner "$image" scan source --all-packages --all-vulns \
             --format=json --output-file=/evidence/osv-results.json \
-            --lockfile=/github/workspace/Cargo.lock \
-            --lockfile=/github/workspace/apps/desktop/src-tauri/Cargo.lock \
-            --lockfile=/github/workspace/apps/desktop/package-lock.json > "$evidence/scanner.log" 2>&1
+            "${lock_args[@]}" > "$evidence/scanner.log" 2>&1
           scanner_status=$?
           reporter_status=125
           if [[ "$scanner_status" == 0 || "$scanner_status" == 1 ]]; then
             timeout --signal=TERM --kill-after=30s 600s docker run "${common[@]}" \
               --entrypoint=/osv-scanner "$image" scan source --all-packages --all-vulns \
                 --format=sarif --output-file=/evidence/osv-results.sarif \
-              --lockfile=/github/workspace/Cargo.lock \
-              --lockfile=/github/workspace/apps/desktop/src-tauri/Cargo.lock \
-              --lockfile=/github/workspace/framework-packages/runtime-host/Cargo.lock \
-              --lockfile=/github/workspace/apps/desktop/package-lock.json > "$evidence/reporter.log" 2>&1
+            "${lock_args[@]}" > "$evidence/reporter.log" 2>&1
             reporter_status=$?
           fi
           set -e
