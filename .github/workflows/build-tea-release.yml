@@ -23,15 +23,30 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Check CI cache and gate contracts
+        run: python scripts/test_ci_cache_contract.py
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@a5f673d0ba8626c3977bb416a1612774bc82181b # 1.95.0
 
       - name: Test startup lock
         run: cargo test --locked -p tea_startup_lock
 
+      # Cache only the pinned scanner, never advisory data or scan results.
+      - name: Cache cargo-audit
+        id: cargo-audit
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/cargo-audit-tool
+          key: cargo-audit-v1-${{ runner.os }}-${{ runner.arch }}-0.22.2-rust-1.95.0
+
+      - name: Install pinned cargo-audit
+        if: steps.cargo-audit.outputs.cache-hit != 'true'
+        run: cargo install cargo-audit --locked --version 0.22.2 --root "$RUNNER_TEMP/cargo-audit-tool"
+
       - name: Audit Rust dependency locks
         run: |
-          cargo install cargo-audit --locked --version 0.22.2
+          export PATH="$RUNNER_TEMP/cargo-audit-tool/bin:$PATH"
+          test "$(cargo audit --version)" = "cargo-audit 0.22.2"
           python3 scripts/run_dependency_audit.py cargo --output .tmp/audit-root -- cargo audit --json
           python3 scripts/run_dependency_audit.py cargo --output .tmp/audit-desktop -- cargo audit --file apps/desktop/src-tauri/Cargo.lock --json
       - name: Retain Rust audit reports
