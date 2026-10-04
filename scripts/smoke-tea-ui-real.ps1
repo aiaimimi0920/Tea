@@ -350,6 +350,7 @@ import path from "node:path";
 import { verifyCompletionReview } from "./tea-completion-review-smoke.mjs";
 import { verifyEditorSessions } from "./tea-editor-integrity-smoke.mjs";
 import { verifyReviewDrafts } from "./tea-review-drafts-smoke.mjs";
+import { verifyEmptySettings } from "./tea-empty-settings-smoke.mjs";
 
 const playwrightRoot = process.env.PLAYWRIGHT_PACKAGE_ROOT;
 if (!playwrightRoot) throw new Error("PLAYWRIGHT_PACKAGE_ROOT is required");
@@ -562,6 +563,11 @@ try {
   if (!nativeTauriRuntime) {
     throw new Error("Tea WebView did not expose the native Tauri runtime");
   }
+  markProgress("empty-settings:start");
+  const emptySettings = await verifyEmptySettings(
+    page, timeoutMs, path.join(screenshotRoot, "tea-empty-settings.png"),
+  );
+  markProgress("empty-settings:complete");
   const accessibility = await inspectAccessibilityContracts(page);
   if (accessibility.activitySummaryInteractiveDescendants !== 0) {
     throw new Error("Activity log summary contains a nested interactive control");
@@ -887,6 +893,7 @@ try {
     acceptedApprovalReview,
     editorSessions,
     reviewDrafts,
+    emptySettings,
     pageUrl: page.url(),
     pageTitle: await page.title().catch(() => ""),
     pageStates,
@@ -917,6 +924,8 @@ Copy-Item -LiteralPath (Join-Path $PSScriptRoot "tea-completion-review-smoke.mjs
     -Destination (Join-Path $artifactRoot "tea-completion-review-smoke.mjs")
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "tea-editor-integrity-smoke.mjs") `
     -Destination (Join-Path $artifactRoot "tea-editor-integrity-smoke.mjs")
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot "tea-empty-settings-smoke.mjs") `
+    -Destination (Join-Path $artifactRoot "tea-empty-settings-smoke.mjs")
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "tea-review-drafts-smoke.mjs") `
     -Destination (Join-Path $artifactRoot "tea-review-drafts-smoke.mjs")
 $nodeExe = (Get-Command node -ErrorAction Stop).Source
@@ -931,14 +940,6 @@ try {
 
     Wait-TeaHealth -BaseUrl $baseUrl -Process $daemonProcess -TimeoutSec $TimeoutSec
     $status = Invoke-TeaApi -BaseUrl $baseUrl -Token $AuthToken -Path "/v1/status"
-    $ticket = Invoke-TeaApi -BaseUrl $baseUrl -Token $AuthToken -Path "/v1/tickets" -Method "POST" -Body @{
-        title = "Tea UI smoke"
-        description = "Created before launching tea.exe UI mode so the UI has real local data."
-    }
-    Invoke-TeaApi -BaseUrl $baseUrl -Token $AuthToken -Path "/v1/tickets/$($ticket.id)/comments" -Method "POST" -Body @{
-        body = "Tea UI smoke comment for timeline coverage."
-    } | Out-Null
-
     $env:TEA_UI_PROXY_PORT = [string]$ProxyPort
     $env:TEA_UI_PROXY_UPSTREAM = $baseUrl
     $proxyProcess = Start-Process -FilePath $nodeExe `
@@ -1036,7 +1037,7 @@ try {
         daemonPid = $daemonProcess.Id
         proxyPid = $proxyProcess.Id
         uiPid = $uiProcess.Id
-        ticketId = $ticket.id
+        ticketId = $result.emptySettings.ticketId
         storeBackend = $status.store.backend
         native_tauri_runtime = [bool]$result.native_tauri_runtime
         duplicateSubmitTicketCount = [int]$result.duplicateSubmitTicketCount

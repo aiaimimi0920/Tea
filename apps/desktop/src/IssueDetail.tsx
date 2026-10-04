@@ -9,23 +9,17 @@ import {
   buildConversationTimelineItems,
   type ConversationFilter,
 } from "./conversation";
-import { safeLoomPanelUrl } from "./externalLinks";
+import { TeaSettingsPanel } from "./TeaSettingsPanel";
 import { t, useLocale } from "./i18n";
 import {
   approvalPolicyOptions,
-  configurationDetailsOf,
-  configurationSourceOf,
-  executionProviderOf,
   formatTime,
   isClosedTicket,
   issueAgeLabel,
   issueNumber,
   issueStateLabel,
-  localConfigOf,
   pretty,
   progressForTicket,
-  statusText,
-  storeBackendOf,
   timelineEntryReference,
   workflowActionGroups,
 } from "./issueFormat";
@@ -39,6 +33,7 @@ import type { TicketEditSubmission } from "./ticketEditing";
 import { isTicketActionDisabled } from "./ticketLifecycle";
 import {
   TeaAnalysis,
+  TeaClientOptions,
   TeaComment,
   TeaEvent,
   TeaLocalConfig,
@@ -118,7 +113,7 @@ export const IssueDetail = memo(function IssueDetail({
   onRemoveLabel: (label: string) => void;
   onResetLabels: () => void;
   onRetryRun: (runId: string) => void;
-  onSaveConfiguration: (config: Partial<TeaLocalConfig>) => void;
+  onSaveConfiguration: (config: Partial<TeaLocalConfig>, connection: TeaClientOptions) => void;
   onSectionChange: (section: RepoSection) => void;
   onStopRun: (runId: string) => void;
   onToggleWatch: () => void;
@@ -138,6 +133,18 @@ export const IssueDetail = memo(function IssueDetail({
   // memo'd component: subscribe to locale changes so a language toggle
   // re-renders the t() output even when all props are unchanged.
   useLocale();
+  if (activeSection === "settings") {
+    return (
+      <article className="issue-detail">
+        <TeaSettingsPanel
+          busy={busy}
+          connection={reviewScope.connection}
+          snapshot={snapshot}
+          onSaveConfiguration={onSaveConfiguration}
+        />
+      </article>
+    );
+  }
   if (!ticket) {
     return (
       <article className="issue-detail empty-detail">
@@ -302,11 +309,9 @@ export const IssueDetail = memo(function IssueDetail({
             onDownloadExport={onDownloadExport}
             onExport={onExport}
             onRetryRun={onRetryRun}
-            onSaveConfiguration={onSaveConfiguration}
             onStopRun={onStopRun}
             plan={plan}
             runs={runs}
-            snapshot={snapshot}
             ticket={ticket}
           />
         </section>
@@ -550,131 +555,6 @@ function LabelEditor({
 
 
 
-function SettingsConfigEditor({
-  busy,
-  config,
-  fallbackReason,
-  onSave,
-}: {
-  busy: boolean;
-  config: TeaLocalConfig;
-  fallbackReason: string | null;
-  onSave: (config: Partial<TeaLocalConfig>) => void;
-}) {
-  const [draft, setDraft] = useState<TeaLocalConfig>(config);
-
-  useEffect(() => {
-    setDraft(config);
-    // Intentionally reset the draft only when a persisted config field we edit changes,
-    // not on every `config` object identity change (which would discard in-progress edits).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    config.notifications_enabled,
-    config.human_ticket_default_approval_policy,
-    config.hook_ticket_default_approval_policy,
-  ]);
-
-  const dirty =
-    draft.notifications_enabled !== config.notifications_enabled ||
-    draft.human_ticket_default_approval_policy !== config.human_ticket_default_approval_policy ||
-    draft.hook_ticket_default_approval_policy !== config.hook_ticket_default_approval_policy;
-
-  return (
-    <form
-      className="settings-config-editor"
-      onSubmit={(event) => {
-        event.preventDefault();
-        const patch: Partial<TeaLocalConfig> = {};
-        if (draft.notifications_enabled !== config.notifications_enabled) {
-          patch.notifications_enabled = draft.notifications_enabled;
-        }
-        if (
-          draft.human_ticket_default_approval_policy !==
-          config.human_ticket_default_approval_policy
-        ) {
-          patch.human_ticket_default_approval_policy =
-            draft.human_ticket_default_approval_policy;
-        }
-        if (
-          draft.hook_ticket_default_approval_policy !== config.hook_ticket_default_approval_policy
-        ) {
-          patch.hook_ticket_default_approval_policy = draft.hook_ticket_default_approval_policy;
-        }
-        onSave(patch);
-      }}
-    >
-      <div className="settings-config-intro">
-        <strong>{t("Tea local settings")}</strong>
-        <span>{t("Tea owns these settings until Loom claims Tea configuration.")}</span>
-      </div>
-      {fallbackReason ? (
-        <p className="settings-fallback-reason">{t("Fallback")}: {fallbackReason}</p>
-      ) : null}
-      <label className="settings-config-toggle">
-        <input
-          checked={draft.notifications_enabled}
-          disabled={busy}
-          onChange={(event) =>
-            setDraft((current) => ({ ...current, notifications_enabled: event.target.checked }))
-          }
-          type="checkbox"
-        />
-        <span>{t("Enable notifications")}</span>
-      </label>
-      <label className="settings-config-field">
-        <span>{t("Human ticket default approval policy")}</span>
-        <select
-          disabled={busy}
-          onChange={(event) =>
-            setDraft((current) => ({
-              ...current,
-              human_ticket_default_approval_policy: event.target.value,
-            }))
-          }
-          value={draft.human_ticket_default_approval_policy}
-        >
-          {approvalPolicyOptions.map((option) => (
-            <option key={option.value} value={option.value}>
-              {t(option.label)}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="settings-config-field">
-        <span>{t("Hook ticket default approval policy")}</span>
-        <select
-          disabled={busy}
-          onChange={(event) =>
-            setDraft((current) => ({
-              ...current,
-              hook_ticket_default_approval_policy: event.target.value,
-            }))
-          }
-          value={draft.hook_ticket_default_approval_policy}
-        >
-          {approvalPolicyOptions.map((option) => (
-            <option key={option.value} value={option.value}>
-              {t(option.label)}
-            </option>
-          ))}
-        </select>
-      </label>
-      <div className="settings-config-actions">
-        <button className="action-primary" disabled={busy || !dirty} type="submit">
-          {t("Save Tea settings")}
-        </button>
-        <button
-          disabled={busy || !dirty}
-          onClick={() => setDraft(config)}
-          type="button"
-        >
-          {t("Reset changes")}
-        </button>
-      </div>
-    </form>
-  );
-}
-
 function AnalysisPlanChipList({ items }: { items: string[] }) {
   if (items.length === 0) {
     return <span className="analysis-plan-empty-value">{t("None recorded")}</span>;
@@ -833,11 +713,9 @@ function FocusedIssueSection({
   onDownloadExport,
   onExport,
   onRetryRun,
-  onSaveConfiguration,
   onStopRun,
   plan,
   runs,
-  snapshot,
   ticket,
 }: {
   activeSection: RepoSection;
@@ -852,11 +730,9 @@ function FocusedIssueSection({
   onDownloadExport: (format: "json" | "markdown") => void;
   onExport: (format: "json" | "markdown") => void;
   onRetryRun: (runId: string) => void;
-  onSaveConfiguration: (config: Partial<TeaLocalConfig>) => void;
   onStopRun: (runId: string) => void;
   plan: TeaPlan | null;
   runs: TeaRun[];
-  snapshot: TeaSnapshot | null;
   ticket: TeaTicket;
 }) {
   const editor = (
@@ -956,67 +832,6 @@ function FocusedIssueSection({
     );
   }
 
-  if (activeSection === "settings") {
-    const configurationSource = configurationSourceOf(snapshot);
-    const loomManaged = configurationSource === "loom-managed";
-    const details = configurationDetailsOf(snapshot);
-    const localConfig = localConfigOf(snapshot);
-    const loomPanelUrl = safeLoomPanelUrl(details?.loom_panel_url);
-    const fallbackReason = typeof details?.reason === "string" ? details.reason : null;
-
-    return (
-      <section className="section-focus-card" aria-label={t("Focused settings section")}>
-        <header>
-          <h3>{t("Connection and ownership")}</h3>
-          <span>{statusText(snapshot)}</span>
-        </header>
-        <dl className="focused-settings-list">
-          <div>
-            <dt>{t("Configuration source")}</dt>
-            <dd className={`config-source-badge ${configurationSource}`}>{configurationSource}</dd>
-          </div>
-          <div>
-            <dt>{t("Daemon mode")}</dt>
-            <dd>{snapshot?.status ? t("HTTP API online") : snapshot?.health ? t("Health endpoint only") : t("Offline")}</dd>
-          </div>
-          <div>
-            <dt>{t("Execution provider")}</dt>
-            <dd>{executionProviderOf(snapshot)}</dd>
-          </div>
-          <div>
-            <dt>{t("Store backend")}</dt>
-            <dd>{storeBackendOf(snapshot)}</dd>
-          </div>
-        </dl>
-        {loomManaged ? (
-          <div className="loom-managed-settings">
-            <strong>{t("Loom manages Tea configuration.")}</strong>
-            <p>{t("Tea-local settings are read-only while Loom owns Tea configuration. Change these settings from Loom instead.")}</p>
-            {loomPanelUrl ? (
-              <a className="loom-settings-link" href={loomPanelUrl} rel="noreferrer" target="_blank">
-                {t("Open Loom Tea settings")}
-              </a>
-            ) : (
-              <span className="loom-settings-missing">
-                {t("Loom did not provide a Tea configuration panel URL.")}
-              </span>
-            )}
-          </div>
-        ) : (
-          <SettingsConfigEditor
-            busy={busy}
-            config={localConfig}
-            fallbackReason={configurationSource === "fallback" ? fallbackReason : null}
-            onSave={onSaveConfiguration}
-          />
-        )}
-        <details className="raw-details">
-          <summary>{t("Configuration JSON")}</summary>
-          <pre>{pretty(snapshot?.configuration ?? null)}</pre>
-        </details>
-      </section>
-    );
-  }
 
   return (
     <>

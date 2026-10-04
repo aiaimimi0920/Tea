@@ -1505,10 +1505,10 @@ export default function App() {
     }
   }, [beginMutation, editOwner, endMutation, notify]);
 
-  const saveLocalConfiguration = useCallback(async (config: Partial<TeaLocalConfig>) => {
-    if (!beginMutation()) return;
+  const saveLocalConfiguration = useCallback(async (config: Partial<TeaLocalConfig>, connection: TeaClientOptions) => {
+    if (connection !== optionsRef.current || !beginMutation()) return;
     try {
-      await updateConfiguration(config, optionsRef.current);
+      await updateConfiguration(config, connection);
       notify("Tea local configuration saved");
       await refreshRef.current();
     } catch (error) {
