@@ -46,7 +46,9 @@ jobs:
       - name: Audit Rust dependency locks
         run: |
           export PATH="$RUNNER_TEMP/cargo-audit-tool/bin:$PATH"
-          test "$(cargo audit --version)" = "cargo-audit 0.22.2"
+          version=$("$RUNNER_TEMP/cargo-audit-tool/bin/cargo-audit" --version)
+          echo "$version"
+          test "$version" = "cargo-audit 0.22.2"
           python3 scripts/run_dependency_audit.py cargo --output .tmp/audit-root -- cargo audit --json
           python3 scripts/run_dependency_audit.py cargo --output .tmp/audit-desktop -- cargo audit --file apps/desktop/src-tauri/Cargo.lock --json
       - name: Retain Rust audit reports

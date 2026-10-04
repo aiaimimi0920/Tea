@@ -25,7 +25,10 @@ class CacheContractTests(unittest.TestCase):
             "- name: Retain Rust audit reports", 1
         )[0]
         self.assertNotIn("if:", audit)
-        self.assertIn('test "$(cargo audit --version)" = "cargo-audit 0.22.2"', audit)
+        self.assertIn('version=$("$RUNNER_TEMP/cargo-audit-tool/bin/cargo-audit" --version)', audit)
+        self.assertIn('test "$version" = "cargo-audit 0.22.2"', audit)
+        # The cargo subcommand reports "cargo-audit-audit"; query the binary itself.
+        self.assertNotIn("cargo audit --version", audit)
         self.assertIn("--output .tmp/audit-root -- cargo audit --json", audit)
         self.assertIn("--file apps/desktop/src-tauri/Cargo.lock --json", audit)
         self.assertNotIn("--no-fetch", audit)
