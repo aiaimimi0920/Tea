@@ -1,11 +1,11 @@
 [package]
-name = "tea_hook"
+name = "tea_otter"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Tea Hook intake contracts"
+description = "Tea Otter intake contracts"
 
 [dependencies]
 serde.workspace = true

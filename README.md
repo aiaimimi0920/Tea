@@ -5,7 +5,7 @@ Tea is Neuro's API-first AI ticket/work-order control plane.
 Repository: <https://github.com/aiaimimi0920/Tea>
 
 Tea is maintained as an independent GitHub repository and is consumed by the
-top-level Neuro workspace as a submodule, matching the Hook repository model.
+top-level Neuro workspace as a submodule, matching the Otter repository model.
 
 Tea owns:
 
@@ -22,7 +22,7 @@ Tea does not own:
 - model/provider routing;
 - Gateway credentials or relay internals;
 - Loom workflow execution internals;
-- Hook foreground capture.
+- Otter foreground capture.
 
 ## Runtime modes
 
@@ -46,9 +46,9 @@ Tea does not own:
 
 ## Release package contract
 
-Tea release packages are standalone local-app artifacts in the same product family as Hook and Talk.
+Tea release packages are standalone local-app artifacts in the same product family as Otter and Talk.
 A user must be able to install and run Tea without
-installing Platform, Hook, or Talk; integrations are additive rather than
+installing Platform, Otter, or Talk; integrations are additive rather than
 required for the package to start.
 
 The Windows release package is one Tea app with both UI and no-UI launch modes.
@@ -97,7 +97,7 @@ It contains `tea.exe`, `tea-daemon.exe`, `tea-cli.exe`, `tea-mcp.exe`,
   GUI startup also requires the sibling `tea-daemon.exe` to be a regular file and
   rejects symbolic links, junctions, and other reparse points before spawning it.
 
-Release package configuration follows the same independent-program rule as Hook
+Release package configuration follows the same independent-program rule as Otter
 and Talk. Without Loom, or when Loom is present but has not claimed Tea
 configuration, Tea may expose and write Tea-local settings through its own local
 settings UI or equivalent CLI/API surface. When Loom claims Tea configuration,
@@ -189,14 +189,14 @@ field, rather than resetting untouched fields to defaults. An explicitly newer
 unsupported schema is never hidden by fallback.
 
 The configured default approval policies are applied when Tea creates new
-human tickets through `POST /v1/tickets` and Hook tickets through
+human tickets through `POST /v1/tickets` and Otter tickets through
 `POST /v1/intake/hook`. Unknown approval policy values are rejected by
 both `PUT /v1/configuration` and `PATCH /v1/configuration` instead of being saved
 for a later runtime failure.
 
 Both create endpoints accept an optional `Idempotency-Key` header. A key must be
 supplied exactly once, contain 1-255 visible ASCII bytes, and contain no
-whitespace. Keys are scoped independently to the human and Hook create routes.
+whitespace. Keys are scoped independently to the human and Otter create routes.
 Repeating the same semantic request with the same key returns the original `200`
 response and does not append another ticket or creation event. Reusing the key
 with a different request returns `409 Conflict`. Requests without the header keep
@@ -288,7 +288,7 @@ connect target, and objects, forms, framing, and base-URL rewriting are disabled
 Incoming JSON request bodies are explicitly limited to 2 MiB. Persisted input
 has tighter UTF-8 byte limits: ticket titles 1 KiB, descriptions 512 KiB,
 comments 256 KiB, rejection reasons 64 KiB, priorities 128 bytes, and at most 64
-labels of 256 bytes each. Hook intake additionally limits its source, text,
+labels of 256 bytes each. Otter intake additionally limits its source, text,
 context fields, attachment count, attachment metadata, and final normalized
 description. Attachment kind/reference pairs are retained in the normalized
 description under an explicitly untrusted-reference heading instead of being
@@ -717,7 +717,7 @@ passing run; pass `-KeepArtifacts` to preserve them for inspection. Pass
 
 For a repeatable Tea -> Loom decompose acceptance smoke, run:
 
-The Tea -> Loom, Hook -> Tea, and Platform -> Tea harnesses below are maintained
+The Tea -> Loom, Otter -> Tea, and Platform -> Tea harnesses below are maintained
 in the parent Neuro workspace because they span independently versioned
 repositories. Run those commands from the Neuro repository root; they are not
 part of a standalone Tea clone.
@@ -795,20 +795,20 @@ configuration. When Loom owns Tea configuration, the same page becomes read-only
 and shows an `Open Loom Tea settings` jump target instead of saving local
 settings.
 
-## Hook integration smoke
+## Otter integration smoke
 
-To prove Hook can create a ticket in a real Tea daemon, run the root smoke
+To prove Otter can create a ticket in a real Tea daemon, run the root smoke
 harness:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\smoke-hook-tea-real.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\smoke-otter-tea-real.ps1
 ```
 
 The harness starts an isolated `tea-daemon` on a free loopback port with a
-temporary SQLite store, runs Hook's ignored Rust test
+temporary SQLite store, runs Otter's ignored Rust test
 `tea_real_daemon_smoke`, then verifies:
 
-- Hook posted to Tea `POST /v1/intake/hook` through its real Rust client;
+- Otter posted to Tea `POST /v1/intake/hook` through its real Rust client;
 - the created ticket has `source:hook`, `policy:plan-only`, and
   `context:untrusted`;
 - Tea can return the ticket, events, and Markdown export through HTTP.
@@ -817,14 +817,14 @@ Smoke artifacts are written to `.tmp/tea-smoke/hook-tea-real-<timestamp>/`.
 Use `-KeepArtifacts` if you want to preserve the temporary SQLite store for
 manual inspection.
 
-To prove the Hook frontend panel can create a Tea ticket through the Tauri
+To prove the Otter frontend panel can create a Tea ticket through the Tauri
 invoke bridge and the real Tea daemon, run:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\smoke-hook-tea-ui-real.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\smoke-otter-tea-ui-real.ps1
 ```
 
-The UI smoke builds Hook's static frontend, starts an isolated Hook preview and
+The UI smoke builds Otter's static frontend, starts an isolated Otter preview and
 `tea-daemon`, injects a Tauri-compatible invoke bridge into headless Chromium,
 clicks the `Create Tea Ticket` panel button, and then verifies the created
 ticket through Tea's HTTP ticket/events/Markdown export endpoints. Artifacts are

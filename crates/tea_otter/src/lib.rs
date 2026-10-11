@@ -4,16 +4,16 @@ use serde::{Deserialize, Serialize};
 use tea_core::{ActorRef, TicketSource};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HookIntakeRequest {
+pub struct OtterIntakeRequest {
     pub source: String,
     pub text: String,
-    pub context: HookContext,
+    pub context: OtterContext,
     #[serde(default)]
-    pub attachments: Vec<HookAttachment>,
+    pub attachments: Vec<OtterAttachment>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HookContext {
+pub struct OtterContext {
     pub active_window: Option<String>,
     pub selection_text: Option<String>,
     pub ocr_text: Option<String>,
@@ -23,13 +23,13 @@ pub struct HookContext {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HookAttachment {
+pub struct OtterAttachment {
     pub kind: String,
     pub reference: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NormalizedHookTicket {
+pub struct NormalizedOtterTicket {
     pub title: String,
     pub description: String,
     pub source: TicketSource,
@@ -37,10 +37,10 @@ pub struct NormalizedHookTicket {
     pub labels: Vec<String>,
 }
 
-pub fn normalize_hook_intake(request: &HookIntakeRequest) -> NormalizedHookTicket {
-    let title = first_chars_or_fallback(&request.text, 80, "Hook ticket");
+pub fn normalize_otter_intake(request: &OtterIntakeRequest) -> NormalizedOtterTicket {
+    let title = first_chars_or_fallback(&request.text, 80, "Otter ticket");
     let mut description = request.text.clone();
-    description.push_str("\n\n--- Hook context (untrusted) ---\n");
+    description.push_str("\n\n--- Otter context (untrusted) ---\n");
     append_context(
         &mut description,
         "active_window",
@@ -60,7 +60,7 @@ pub fn normalize_hook_intake(request: &HookIntakeRequest) -> NormalizedHookTicke
     append_context(&mut description, "cwd", &request.context.cwd);
     append_context(&mut description, "app", &request.context.app);
     if !request.attachments.is_empty() {
-        description.push_str("\n--- Hook attachments (untrusted references) ---\n");
+        description.push_str("\n--- Otter attachments (untrusted references) ---\n");
         for (index, attachment) in request.attachments.iter().enumerate() {
             description.push_str(&format!("attachment[{index}].kind: {}\n", attachment.kind));
             description.push_str(&format!(
@@ -70,7 +70,7 @@ pub fn normalize_hook_intake(request: &HookIntakeRequest) -> NormalizedHookTicke
         }
     }
 
-    NormalizedHookTicket {
+    NormalizedOtterTicket {
         title,
         description,
         source: TicketSource::Hook,
@@ -110,10 +110,10 @@ mod tests {
 
     #[test]
     fn hook_intake_normalizes_to_plan_only_untrusted_ticket() {
-        let normalized = normalize_hook_intake(&HookIntakeRequest {
+        let normalized = normalize_otter_intake(&OtterIntakeRequest {
             source: "desktop".to_string(),
             text: "Please analyze current failure".to_string(),
-            context: HookContext {
+            context: OtterContext {
                 active_window: Some("PowerShell".to_string()),
                 selection_text: Some("cargo test failed".to_string()),
                 ocr_text: None,
@@ -121,7 +121,7 @@ mod tests {
                 cwd: Some("C:\\repo".to_string()),
                 app: Some("terminal".to_string()),
             },
-            attachments: vec![HookAttachment {
+            attachments: vec![OtterAttachment {
                 kind: "screenshot".to_string(),
                 reference: "hook://capture/123".to_string(),
             }],

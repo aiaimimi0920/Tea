@@ -244,7 +244,7 @@ const zh: Record<string, string> = {
   "Fallback": "回退原因",
   "Enable notifications": "启用通知",
   "Human ticket default approval policy": "人工工单默认审批策略",
-  "Hook ticket default approval policy": "Hook 工单默认审批策略",
+  "Otter ticket default approval policy": "Otter 工单默认审批策略",
   "Local AI operator": "本地 AI 操作员",
 
   // Longer descriptive copy

@@ -12,7 +12,7 @@ members = [
     "crates/tea_brain",
     "crates/tea_loom",
     "crates/tea_api",
-    "crates/tea_hook",
+    "crates/tea_otter",
     "crates/tea_http_read",
     "crates/tea_audit",
     "crates/tea_mcp",
@@ -51,7 +51,7 @@ tea_config = { path = "crates/tea_config" }
 tea_brain = { path = "crates/tea_brain" }
 tea_loom = { path = "crates/tea_loom" }
 tea_api = { path = "crates/tea_api" }
-tea_hook = { path = "crates/tea_hook" }
+tea_otter = { path = "crates/tea_otter" }
 # default-features off so lean consumers (tea_mcp) can skip the reqwest-based
 # readers; binaries opt back in with features = ["http"].
 tea_http_read = { path = "crates/tea_http_read", default-features = false }

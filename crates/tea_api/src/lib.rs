@@ -32,8 +32,8 @@ use tea_core::{
     ActorRef, ApprovalPolicy, Plan, Run, RunId, RunStatus, Ticket, TicketAnalysis, TicketComment,
     TicketCreateOptions, TicketEdits, TicketEvent, TicketId, TicketSource, TicketStatus,
 };
-use tea_hook::{normalize_hook_intake, HookIntakeRequest};
 use tea_loom::LoomClient;
+use tea_otter::{normalize_otter_intake, OtterIntakeRequest};
 use tea_policy::{
     evaluate_close, evaluate_run, weakens_approval_policy, PolicyDecision, PolicyInput,
 };
@@ -1408,7 +1408,7 @@ where
 async fn hook_intake<S, A, L>(
     State(state): State<AppState<S, A, L>>,
     headers: HeaderMap,
-    Json(request): Json<HookIntakeRequest>,
+    Json(request): Json<OtterIntakeRequest>,
 ) -> Result<Json<Ticket>, ApiError>
 where
     S: TicketStore,
@@ -1416,9 +1416,9 @@ where
     require_auth(&state.auth, &headers)?;
     validate_hook_intake_request(&request)?;
     let idempotency = idempotency_request(&headers, HOOK_CREATE_IDEMPOTENCY_SCOPE, &request)?;
-    let normalized = normalize_hook_intake(&request);
+    let normalized = normalize_otter_intake(&request);
     validate_max_bytes(
-        "normalized Hook description",
+        "normalized Otter description",
         &normalized.description,
         MAX_TICKET_DESCRIPTION_BYTES,
     )?;
@@ -1790,40 +1790,43 @@ fn validate_edit_ticket_request(request: &EditTicketRequest) -> Result<(), ApiEr
     Ok(())
 }
 
-fn validate_hook_intake_request(request: &HookIntakeRequest) -> Result<(), ApiError> {
-    validate_max_bytes("Hook source", &request.source, MAX_HOOK_SOURCE_BYTES)?;
-    validate_max_bytes("Hook text", &request.text, MAX_HOOK_TEXT_BYTES)?;
+fn validate_hook_intake_request(request: &OtterIntakeRequest) -> Result<(), ApiError> {
+    validate_max_bytes("Otter source", &request.source, MAX_HOOK_SOURCE_BYTES)?;
+    validate_max_bytes("Otter text", &request.text, MAX_HOOK_TEXT_BYTES)?;
 
     for (field, value) in [
-        ("Hook active_window", request.context.active_window.as_ref()),
         (
-            "Hook selection_text",
+            "Otter active_window",
+            request.context.active_window.as_ref(),
+        ),
+        (
+            "Otter selection_text",
             request.context.selection_text.as_ref(),
         ),
-        ("Hook ocr_text", request.context.ocr_text.as_ref()),
+        ("Otter ocr_text", request.context.ocr_text.as_ref()),
         (
-            "Hook screenshot_ref",
+            "Otter screenshot_ref",
             request.context.screenshot_ref.as_ref(),
         ),
-        ("Hook cwd", request.context.cwd.as_ref()),
-        ("Hook app", request.context.app.as_ref()),
+        ("Otter cwd", request.context.cwd.as_ref()),
+        ("Otter app", request.context.app.as_ref()),
     ] {
         validate_optional_max_bytes(field, value, MAX_HOOK_CONTEXT_FIELD_BYTES)?;
     }
 
     if request.attachments.len() > MAX_HOOK_ATTACHMENTS {
         return Err(ApiError::bad_request(format!(
-            "Hook attachments must contain at most {MAX_HOOK_ATTACHMENTS} items"
+            "Otter attachments must contain at most {MAX_HOOK_ATTACHMENTS} items"
         )));
     }
     for attachment in &request.attachments {
         validate_max_bytes(
-            "Hook attachment kind",
+            "Otter attachment kind",
             &attachment.kind,
             MAX_HOOK_ATTACHMENT_KIND_BYTES,
         )?;
         validate_max_bytes(
-            "Hook attachment reference",
+            "Otter attachment reference",
             &attachment.reference,
             MAX_HOOK_ATTACHMENT_REFERENCE_BYTES,
         )?;
