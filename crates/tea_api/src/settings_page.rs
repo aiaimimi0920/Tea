@@ -201,7 +201,7 @@ pub(crate) fn render_settings_page(configuration: &ConfigurationResponse) -> Str
         </select>
       </label>
       <label>
-        <span>Hook ticket default approval policy</span>
+        <span>Otter ticket default approval policy</span>
         <select name="hook_ticket_default_approval_policy"{disabled_attr}>
           {hook_options}
         </select>

@@ -1412,8 +1412,8 @@ dependencies = [
  "tea_brain",
  "tea_config",
  "tea_core",
- "tea_hook",
  "tea_loom",
+ "tea_otter",
  "tea_policy",
  "tea_store",
  "tokio",
@@ -1465,14 +1465,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tea_hook"
-version = "0.1.0"
-dependencies = [
- "serde",
- "tea_core",
-]
-
-[[package]]
 name = "tea_http_read"
 version = "0.1.0"
 dependencies = [
@@ -1505,6 +1497,14 @@ dependencies = [
  "serde_json",
  "tea_http_read",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "tea_otter"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "tea_core",
 ]
 
 [[package]]

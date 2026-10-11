@@ -1716,7 +1716,7 @@ async fn create_idempotency_keys_are_scoped_between_human_and_hook_routes() {
                 .body(Body::from(
                     json!({
                         "title": "Human scoped ticket",
-                        "description": "Human and Hook routes use independent key scopes."
+                        "description": "Human and Otter routes use independent key scopes."
                     })
                     .to_string(),
                 ))
@@ -1728,7 +1728,7 @@ async fn create_idempotency_keys_are_scoped_between_human_and_hook_routes() {
     let human: Ticket = serde_json::from_slice(&body_bytes(human).await).unwrap();
     let hook_body = json!({
         "source": "hook-smoke",
-        "text": "Hook scoped ticket uses the same external key.",
+        "text": "Otter scoped ticket uses the same external key.",
         "context": {
             "active_window": null,
             "selection_text": null,

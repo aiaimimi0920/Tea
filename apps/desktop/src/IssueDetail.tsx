@@ -641,7 +641,7 @@ function SettingsConfigEditor({
         </select>
       </label>
       <label className="settings-config-field">
-        <span>{t("Hook ticket default approval policy")}</span>
+        <span>{t("Otter ticket default approval policy")}</span>
         <select
           disabled={busy}
           onChange={(event) =>
