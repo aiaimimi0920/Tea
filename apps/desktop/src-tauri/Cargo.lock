@@ -3451,7 +3451,7 @@ name = "tea_http_read"
 version = "0.1.0"
 dependencies = [
  "reqwest 0.12.28",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
